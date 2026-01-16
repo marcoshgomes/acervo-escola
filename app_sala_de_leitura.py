@@ -11,31 +11,29 @@ from PIL import Image
 from supabase import create_client, Client
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="BookScan Hub Cloud", layout="centered", page_icon="📚")
+st.set_page_config(page_title="Acervo Sala de Leitura", layout="centered", page_icon="📚")
 
-# --- 2. MODO ESCURO CUSTOMIZADO (ESTILO LOVABLE) ---
-st.markdown('<style>.stApp { background-color: #121212; color: #E0E0E0; } section[data-testid="stSidebar"] { background-color: #1B1B1B; } .stButton>button { background-color: #FFB300 !important; color: black !important; border-radius: 10px; width: 100%; border: none; font-weight: bold; } .stTextInput input, .stTextArea textarea { background-color: #1E1E1E !important; color: #FFB300 !important; border-color: #333 !important; } .stMetric { background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333; } [data-testid="stHeader"] { background: rgba(0,0,0,0); } </style>', unsafe_allow_html=True)
-st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
+# Proteção contra Google Tradutor (Mantendo apenas o essencial)
+st.markdown('<head><meta name="google" content="notranslate"></head>', unsafe_allow_html=True)
 
-# --- 3. CONEXÃO SUPABASE ---
+# --- 2. CONEXÃO SUPABASE ---
 def conectar_supabase():
     try:
         url = st.secrets["supabase"]["url"]
         key = st.secrets["supabase"]["key"]
         return create_client(url, key)
-    except Exception as e:
+    except:
         return None
 
 supabase = conectar_supabase()
 
-# --- 4. FUNÇÕES DE BUSCA (API & NUVEM) ---
+# --- 3. FUNÇÕES DE BUSCA ---
 
 def buscar_dados_livro(isbn):
-    """Busca dados com fallback entre Google Books e Open Library"""
     isbn_limpo = "".join(filter(str.isdigit, str(isbn)))
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # 1. TENTA GOOGLE BOOKS
+    # 1. GOOGLE BOOKS
     try:
         url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn_limpo}"
         res = requests.get(url, headers=headers, timeout=5).json()
@@ -50,7 +48,7 @@ def buscar_dados_livro(isbn):
             }
     except: pass
 
-    # 2. TENTA OPEN LIBRARY
+    # 2. OPEN LIBRARY
     try:
         url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_limpo}&format=json&jscmd=data"
         res = requests.get(url, headers=headers, timeout=5).json()
@@ -60,88 +58,91 @@ def buscar_dados_livro(isbn):
             return {
                 "titulo": info.get("title", "Título não encontrado"),
                 "autor": ", ".join([a['name'] for a in info.get("authors", [])]) or "Desconhecido",
-                "sinopse": "Sinopse não disponível.",
+                "sinopse": "Sinopse não disponível nesta base.",
                 "genero": "Geral",
                 "fonte": "Open Library"
             }
     except: pass
     return None
 
-# --- 5. LÓGICA DE SCANNER (HÍBRIDO: BARCODE + QRCODE) ---
+# --- 4. SCANNER CORRIGIDO (RESOLVE O VALUEERROR) ---
 
 def processar_imagem_hibrida(foto):
-    """Lógica da Versão 2: Redimensionamento + Grayscale para máxima eficiência"""
+    # Redimensiona para acelerar o processamento e evitar erro de memória
     img_pil = Image.open(foto)
-    img_pil.thumbnail((1000, 1000))
+    img_pil.thumbnail((800, 800)) 
     img_cv = np.array(img_pil.convert('RGB'))
-    img_cv = img_cv[:, :, ::-1].copy() # RGB para BGR
+    img_cv = img_cv[:, :, ::-1].copy()
     gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
     
-    # Tentativa 1: QR CODE (Novo Requisito)
+    # 1. Tentar QR CODE
     qr_detector = cv2.QRCodeDetector()
     val_qr, _, _ = qr_detector.detectAndDecode(gray)
     if val_qr:
-        # Tenta extrair ISBN se o QR for um link
-        isbn_extraido = re.findall(r'(\d{10,13})', val_qr)
-        return isbn_extraido[0] if isbn_extraido else val_qr
+        # Se for um link, extrai o ISBN dele
+        isbn_link = re.findall(r'(\d{10,13})', val_qr)
+        return isbn_link[0] if isbn_link else val_qr
     
-    # Tentativa 2: CÓDIGO DE BARRAS (Lógica Versão 2)
+    # 2. Tentar CÓDIGO DE BARRAS (Forma segura de desempacotar)
     bar_detector = cv2.barcode.BarcodeDetector()
-    ok, decoded_info, _, _ = bar_detector.detectAndDecode(gray)
-    if ok and decoded_info:
-        return decoded_info[0]
-        
+    resultado = bar_detector.detectAndDecode(gray)
+    
+    # Verificação robusta do retorno do OpenCV para evitar ValueError
+    if resultado is not None and len(resultado) > 0:
+        codigos = resultado[0] # Lista de textos lidos
+        if codigos and len(codigos) > 0 and codigos[0] != "":
+            return codigos[0]
+            
     return None
 
-# --- 6. INTERFACE ---
+# --- 5. INTERFACE ---
+
 if "isbn_detectado" not in st.session_state: st.session_state.isbn_detectado = ""
-if "reset_count" not in st.session_state: st.session_state.reset_count = 0
 
-st.sidebar.title("📚 Acervo Cloud Pro")
-menu = st.sidebar.selectbox("Navegação", ["Entrada de Livros", "Ver Acervo"])
+st.sidebar.title("📚 Acervo Digital")
+menu = st.sidebar.selectbox("Navegação", ["Cadastrar Livro", "Ver Acervo"])
 
-if menu == "Entrada de Livros":
-    st.header("🚚 Entrada de Volumes")
+if menu == "Cadastrar Livro":
+    st.title("🚚 Entrada de Livros")
     
-    foto = st.file_uploader("📷 Escanear Código (Barras ou QR)", type=['png', 'jpg', 'jpeg'], key=f"u_{st.session_state.reset_count}")
+    foto = st.file_uploader("📷 Capture o Código de Barras ou QR Code", type=['png', 'jpg', 'jpeg'])
     
     if foto:
-        with st.spinner("Lendo imagem..."):
+        with st.spinner("Lendo código..."):
             resultado = processar_imagem_hibrida(foto)
             if resultado:
                 st.session_state.isbn_detectado = resultado
-                st.success(f"✅ Código lido: {resultado}")
+                st.success(f"✅ Código identificado: {resultado}")
             else:
-                st.error("❌ Não detectamos código. Aproxime mais a câmera.")
+                st.error("❌ Não foi possível ler. Tente focar melhor no código.")
 
-    st.divider()
-    
     isbn_confirmado = st.text_input("Confirme o Código/ISBN:", value=st.session_state.isbn_detectado).strip()
 
     if isbn_confirmado:
         if not supabase:
-            st.error("Erro: Supabase não configurado nos Secrets.")
+            st.error("Erro de conexão com o banco de dados.")
         else:
-            # Verifica se já existe na nuvem
-            res_check = supabase.table("livros_acervo").select("*").eq("isbn", isbn_confirmado).execute()
+            # Verifica se já existe
+            res_db = supabase.table("livros_acervo").select("*").eq("isbn", isbn_confirmado).execute()
             
-            if res_check.data:
-                item = res_check.data[0]
-                st.info(f"📖 Livro: {item['titulo']} (Já cadastrado)")
-                add_qtd = st.number_input("Adicionar exemplares?", min_value=1, value=1)
-                if st.button("➕ Atualizar na Nuvem"):
+            if res_db.data:
+                item = res_db.data[0]
+                st.info(f"📖 Livro: {item['titulo']}")
+                add_qtd = st.number_input("Adicionar quantos exemplares ao estoque?", min_value=1, value=1)
+                if st.button("➕ Atualizar Estoque"):
                     nova_qtd = int(item['quantidade']) + add_qtd
                     supabase.table("livros_acervo").update({"quantidade": nova_qtd}).eq("isbn", isbn_confirmado).execute()
-                    st.success("Estoque Atualizado!")
-                    st.session_state.isbn_detectado = ""; st.rerun()
+                    st.success("Estoque atualizado!")
+                    st.session_state.isbn_detectado = ""
+                    time.sleep(1); st.rerun()
             else:
                 # Novo livro - Busca APIs
                 with st.spinner("Buscando dados bibliográficos..."):
                     dados = buscar_dados_livro(isbn_confirmado)
                     if not dados: dados = {"titulo": "", "autor": "", "sinopse": "", "genero": "Geral", "fonte": "Manual"}
                     
-                    st.warning(f"✨ Novo Registro via {dados['fonte']}")
-                    with st.form("novo_cadastro"):
+                    st.subheader(f"✨ Novo Registro (Fonte: {dados['fonte']})")
+                    with st.form("form_novo"):
                         f_tit = st.text_input("Título", dados['titulo'])
                         f_aut = st.text_input("Autor", dados['autor'])
                         f_gen = st.text_input("Gênero", dados['genero'])
@@ -154,16 +155,20 @@ if menu == "Entrada de Livros":
                                 "sinopse": f_sin, "genero": f_gen, "quantidade": f_qtd,
                                 "data_cadastro": datetime.now().isoformat()
                             }).execute()
-                            st.success("Cadastrado com sucesso!")
-                            st.session_state.isbn_detectado = ""; st.rerun()
+                            st.success("Livro cadastrado com sucesso!")
+                            st.session_state.isbn_detectado = ""
+                            time.sleep(1); st.rerun()
 
-elif menu == "Ver Acervo":
+else:
     st.title("📊 Acervo Geral")
     if supabase:
-        res = supabase.table("livros_acervo").select("*").execute()
-        if res.data:
-            df = pd.DataFrame(res.data)
-            c1, c2 = st.columns(2)
-            c1.metric("Títulos", len(df))
-            c2.metric("Total Volumes", df['quantidade'].sum())
-            st.dataframe(df[['isbn', 'titulo', 'autor', 'genero', 'quantidade']], use_container_width=True)
+        try:
+            res = supabase.table("livros_acervo").select("*").execute()
+            if res.data:
+                df = pd.DataFrame(res.data)
+                st.metric("Total de Títulos", len(df))
+                st.dataframe(df[['isbn', 'titulo', 'autor', 'genero', 'quantidade']], use_container_width=True)
+            else:
+                st.info("Nenhum livro cadastrado.")
+        except:
+            st.error("Erro ao carregar dados.")
