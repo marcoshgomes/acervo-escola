@@ -88,14 +88,19 @@ def buscar_livro_nuvem(isbn):
     except: return []
 
 def buscar_dados_online(isbn):
-    """Busca em múltiplos serviços para contornar bloqueios de IP na nuvem"""
     isbn_limpo = "".join(filter(str.isdigit, str(isbn)))
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    
-    # 1. TENTATIVA: GOOGLE BOOKS
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    # ===== GOOGLE BOOKS COM API KEY =====
     try:
-        url_google = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn_limpo}"
-        res = requests.get(url_google, headers=headers, timeout=5)
+        api_key = st.secrets["google"]["books_api_key"]
+        url_google = (
+            "https://www.googleapis.com/books/v1/volumes"
+            f"?q=isbn:{isbn_limpo}&key={api_key}&langRestrict=pt"
+        )
+
+        res = requests.get(url_google, timeout=8)
+
         if res.status_code == 200:
             dados = res.json()
             if "items" in dados:
@@ -105,26 +110,30 @@ def buscar_dados_online(isbn):
                     "autor": ", ".join(info.get("authors", ["Desconhecido"])),
                     "sinopse": info.get("description", "Sem sinopse disponível"),
                     "genero": traduzir_genero(info.get("categories", ["General"])[0]),
-                    "fonte": "Google Books"
+                    "fonte": "Google Books (API Key)"
                 }
-    except: pass
+    except Exception as e:
+        st.warning(f"Google Books indisponível: {e}")
 
-    # 2. TENTATIVA: OPEN LIBRARY (Backup)
+    # ===== BACKUP OPEN LIBRARY =====
     try:
         url_ol = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_limpo}&format=json&jscmd=data"
-        res = requests.get(url_ol, headers=headers, timeout=5)
+        res = requests.get(url_ol, timeout=5)
+
         if res.status_code == 200 and f"ISBN:{isbn_limpo}" in res.json():
             info = res.json()[f"ISBN:{isbn_limpo}"]
             return {
                 "titulo": info.get("title", "Título não encontrado"),
-                "autor": ", ".join([a['name'] for a in info.get("authors", [{"name": "Desconhecido"}])]),
-                "sinopse": "Sumário não disponível nesta base de backup.",
+                "autor": ", ".join(a['name'] for a in info.get("authors", [{"name": "Desconhecido"}])),
+                "sinopse": "Resumo não disponível nesta base.",
                 "genero": "Geral",
                 "fonte": "Open Library"
             }
-    except: pass
+    except:
+        pass
 
     return None
+
 
 # =================================================================
 # 5. INTERFACE DO USUÁRIO
