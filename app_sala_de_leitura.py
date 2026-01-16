@@ -1,44 +1,39 @@
 import streamlit as st
 import pandas as pd
 import requests
-import time
 import numpy as np
 import cv2
 import re
+import pytesseract  # Para ler os números escritos
+from pyzbar import pyzbar  # Scanner muito mais potente que o anterior
 from io import BytesIO
 from datetime import datetime
 from PIL import Image
 from supabase import create_client, Client
 
-# --- 1. CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="BookScan Hub", layout="centered", page_icon="📚")
-
-# Proteção contra Google Tradutor
+# --- 1. CONFIGURAÇÃO ---
+st.set_page_config(page_title="BookScan Hub Pro", layout="centered", page_icon="📚")
 st.markdown('<head><meta name="google" content="notranslate"></head>', unsafe_allow_html=True)
 
-# --- 2. CONEXÃO SUPABASE ---
 def conectar_supabase():
     try:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
-    except:
-        return None
+        return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
+    except: return None
 
 supabase = conectar_supabase()
 
-# --- 3. FUNÇÕES DE BUSCA (ORDEM: GOOGLE -> OPEN LIBRARY) ---
+# --- 2. INTELIGÊNCIA DE BUSCA (GOOGLE -> OPEN LIBRARY) ---
 
 def buscar_dados_livro(isbn):
     isbn_limpo = "".join(filter(str.isdigit, str(isbn)))
-    headers = {"User-Agent": "Mozilla/5.0"}
+    if len(isbn_limpo) < 10: return None
     
-    # --- 1ª TENTATIVA: GOOGLE BOOKS ---
+    # 1. GOOGLE BOOKS
     try:
-        url_g = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn_limpo}"
-        res_g = requests.get(url_g, headers=headers, timeout=5).json()
-        if "items" in res_g:
-            info = res_g["items"][0]["volumeInfo"]
+        url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn_limpo}"
+        res = requests.get(url, timeout=5).json()
+        if "items" in res:
+            info = res["items"][0]["volumeInfo"]
             return {
                 "titulo": info.get("title", "Título não encontrado"),
                 "autor": ", ".join(info.get("authors", ["Desconhecido"])),
@@ -46,144 +41,126 @@ def buscar_dados_livro(isbn):
                 "genero": info.get("categories", ["Geral"])[0],
                 "fonte": "Google Books"
             }
-    except:
-        pass
+    except: pass
 
-    # --- 2ª TENTATIVA: OPEN LIBRARY (Fallback) ---
+    # 2. OPEN LIBRARY
     try:
-        url_ol = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_limpo}&format=json&jscmd=data"
-        res_ol = requests.get(url_ol, headers=headers, timeout=5).json()
+        url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_limpo}&format=json&jscmd=data"
+        res = requests.get(url, timeout=5).json()
         key = f"ISBN:{isbn_limpo}"
-        if key in res_ol:
-            info = res_ol[key]
+        if key in res:
+            info = res[key]
             return {
                 "titulo": info.get("title", "Título não encontrado"),
                 "autor": ", ".join([a['name'] for a in info.get("authors", [])]) or "Desconhecido",
-                "sinopse": "Sinopse não disponível (Open Library).",
+                "sinopse": "Sinopse não disponível.",
                 "genero": "Geral",
                 "fonte": "Open Library"
             }
-    except:
-        pass
-
+    except: pass
     return None
 
-# --- 4. SCANNER MELHORADO (FILTRA ERROS DE LEITURA) ---
+# --- 3. SCANNER SUPER POTENTE (BARRAS + QR + OCR) ---
 
-def processar_imagem_hibrida(foto):
+def processar_imagem_completo(foto):
     img_pil = Image.open(foto)
-    img_pil.thumbnail((1000, 1000)) 
+    img_pil.thumbnail((1200, 1200)) # Qualidade maior para o OCR
     img_cv = np.array(img_pil.convert('RGB'))
     img_cv = img_cv[:, :, ::-1].copy()
     gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
     
-    # 1. Tenta QR CODE
-    qr_detector = cv2.QRCodeDetector()
-    val_qr, _, _ = qr_detector.detectAndDecode(gray)
-    if val_qr:
-        isbn_link = re.findall(r'(\d{10,13})', val_qr)
-        res_qr = isbn_link[0] if isbn_link else val_qr
-        if len(res_qr) >= 10: # Valida se é um código real
-            return res_qr
+    # A. Tenta ler Código de Barras e QR Code com PyZbar (Melhor do mercado)
+    objetos_lidos = pyzbar.decode(img_cv)
+    for obj in objetos_lidos:
+        codigo = obj.data.decode("utf-8")
+        isbn_no_link = re.findall(r'(\d{10,13})', codigo)
+        res = isbn_no_link[0] if isbn_no_link else codigo
+        if len(res) >= 10: return res
+
+    # B. Se falhar, tenta ler os NÚMEROS escritos (OCR)
+    # Aplica um filtro para destacar números
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+    texto_extraido = pytesseract.image_to_string(thresh, config='--psm 6 digits')
+    numeros_achados = re.findall(r'(\d{10,13})', texto_extraido)
     
-    # 2. Tenta CÓDIGO DE BARRAS
-    bar_detector = cv2.barcode.BarcodeDetector()
-    resultado = bar_detector.detectAndDecode(gray)
-    
-    if resultado is not None and len(resultado) > 0:
-        codigos = resultado[0]
-        if codigos and len(codigos) > 0:
-            codigo_final = codigos[0].strip()
-            # IMPORTANTE: Só aceita se tiver 10 ou 13 dígitos (padrão ISBN)
-            if len(codigo_final) >= 10:
-                return codigo_final
-            
+    if numeros_achados:
+        return numeros_achados[0]
+        
     return None
 
-# --- 5. INTERFACE ---
+# --- 4. INTERFACE ---
 
-if "isbn_detectado" not in st.session_state: 
-    st.session_state.isbn_detectado = ""
+if "isbn_detectado" not in st.session_state: st.session_state.isbn_detectado = ""
 
-st.sidebar.title("📚 Acervo Sala de Leitura")
-menu = st.sidebar.selectbox("Navegação", ["Scanner Celular", "Ver Acervo"])
+st.sidebar.title("📚 Acervo Digital")
+menu = st.sidebar.selectbox("Menu:", ["Scanner de Livros", "Ver Acervo"])
 
-if menu == "Scanner Celular":
-    st.title("📷 Cadastro via Câmera")
-    st.write("Use esta tela para cadastrar livros que possuem registro oficial.")
+if menu == "Scanner de Livros":
+    st.title("📷 Cadastro Inteligente")
+    st.info("Dica: Se o código de barras não ler, aponte para os números do ISBN abaixo dele.")
     
-    foto = st.file_uploader("Capture a foto do código (Barras ou QR)", type=['png', 'jpg', 'jpeg'])
+    foto = st.file_uploader("Capturar imagem", type=['png', 'jpg', 'jpeg'])
     
     if foto:
-        with st.spinner("Lendo código..."):
-            resultado = processar_imagem_hibrida(foto)
+        with st.spinner("Analisando imagem e textos..."):
+            resultado = processar_imagem_completo(foto)
             if resultado:
                 st.session_state.isbn_detectado = resultado
-                st.success(f"✅ Código identificado: {resultado}")
+                st.success(f"✅ Identificado: {resultado}")
             else:
-                st.error("❌ Código não reconhecido ou incompleto. Tente enquadrar apenas o código de barras.")
+                st.error("❌ Não foi possível identificar o código ou os números.")
 
     isbn_input = st.text_input("Confirme o Código/ISBN:", value=st.session_state.isbn_detectado).strip()
 
     if isbn_input:
-        if not supabase:
-            st.error("Erro de conexão com o Supabase.")
-        else:
-            # 1. Verifica se já existe no banco (para atualizar estoque)
+        if supabase:
             res_db = supabase.table("livros_acervo").select("*").eq("isbn", isbn_input).execute()
             
             if res_db.data:
+                # --- JÁ EXISTE ---
                 item = res_db.data[0]
-                st.info(f"📖 Livro já existente: **{item['titulo']}**")
-                qtd_add = st.number_input("Adicionar exemplares ao estoque?", min_value=1, value=1)
-                if st.button("➕ Atualizar Quantidade"):
-                    nova_qtd = int(item['quantidade']) + qtd_add
+                st.info(f"📖 Livro: {item['titulo']}")
+                add_qtd = st.number_input("Adicionar ao estoque?", min_value=1, value=1)
+                if st.button("➕ Atualizar"):
+                    nova_qtd = int(item['quantidade']) + add_qtd
                     supabase.table("livros_acervo").update({"quantidade": nova_qtd}).eq("isbn", isbn_input).execute()
                     st.success("Estoque atualizado!")
                     st.session_state.isbn_detectado = ""
                     time.sleep(1); st.rerun()
             else:
-                # 2. Se não existe, busca nas APIs (Google -> OpenLibrary)
-                with st.spinner("Buscando dados nas APIs oficiais..."):
+                # --- BUSCA NAS APIs ---
+                with st.spinner("Buscando dados bibliográficos..."):
                     dados = buscar_dados_livro(isbn_input)
-                    
                     if dados:
-                        # ENCONTROU NA API: MOSTRA O FORMULÁRIO PARA SALVAR
-                        st.success(f"✨ Dados encontrados via {dados['fonte']}")
-                        with st.form("form_cadastro_api"):
+                        st.subheader(f"✨ Encontrado via {dados['fonte']}")
+                        with st.form("form_save"):
                             f_tit = st.text_input("Título", dados['titulo'])
                             f_aut = st.text_input("Autor", dados['autor'])
                             f_gen = st.text_input("Gênero", dados['genero'])
                             f_sin = st.text_area("Sinopse", dados['sinopse'], height=150)
-                            f_qtd = st.number_input("Quantidade Inicial", min_value=1, value=1)
-                            
-                            if st.form_submit_button("🚀 Confirmar e Salvar na Nuvem"):
+                            f_qtd = st.number_input("Qtd Inicial", min_value=1, value=1)
+                            if st.form_submit_button("🚀 Salvar na Nuvem"):
                                 supabase.table("livros_acervo").insert({
                                     "isbn": isbn_input, "titulo": f_tit, "autor": f_aut,
-                                    "genero": f_gen, "sinopse": f_sin, "quantidade": f_qtd,
+                                    "sinopse": f_sin, "genero": f_gen, "quantidade": f_qtd,
                                     "data_cadastro": datetime.now().isoformat()
                                 }).execute()
-                                st.success("Livro cadastrado com sucesso!")
+                                st.success("Cadastrado com sucesso!")
                                 st.session_state.isbn_detectado = ""
                                 time.sleep(1); st.rerun()
                     else:
-                        # NÃO ENCONTROU EM NENHUMA API
-                        st.error("⚠️ Este livro não foi encontrado no Google Books nem no Open Library.")
-                        st.info("Para este exemplar, utilize o cadastro manual via Computador.")
-                        if st.button("Limpar e tentar outro"):
+                        st.error("⚠️ Livro não encontrado nas bases oficiais (Google/OpenLibrary).")
+                        if st.button("Tentar outro código"):
                             st.session_state.isbn_detectado = ""
                             st.rerun()
+        else:
+            st.error("Erro de banco de dados.")
 
 else:
-    st.title("📊 Acervo Geral (Nuvem)")
+    st.title("📊 Acervo Geral")
     if supabase:
-        try:
-            res = supabase.table("livros_acervo").select("*").execute()
-            if res.data:
-                df = pd.DataFrame(res.data)
-                st.metric("Total de Títulos", len(df))
-                st.dataframe(df[['isbn', 'titulo', 'autor', 'genero', 'quantidade']], use_container_width=True)
-            else:
-                st.info("Nenhum livro cadastrado.")
-        except:
-            st.error("Erro ao carregar dados do banco.")
+        res = supabase.table("livros_acervo").select("*").execute()
+        if res.data:
+            df = pd.DataFrame(res.data)
+            st.metric("Total de Livros", len(df))
+            st.dataframe(df[['isbn', 'titulo', 'autor', 'genero', 'quantidade']], use_container_width=True)
