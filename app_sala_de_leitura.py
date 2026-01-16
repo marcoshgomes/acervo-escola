@@ -4,23 +4,36 @@ import requests
 import time
 import numpy as np
 import cv2
+import re
 from io import BytesIO
 from datetime import datetime
-from PIL import Image
 from supabase import create_client, Client
 
-# --- 1. CONFIGURAÇÃO E PROTEÇÃO ANTI-TRADUTOR ---
-st.set_page_config(page_title="Acervo Sala de Leitura Cloud", layout="centered", page_icon="📚")
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(
+    page_title="BookScan Hub - Sala de Leitura",
+    layout="centered",
+    page_icon="📚",
+    initial_sidebar_state="expanded"
+)
 
+# --- ESTILO DARK MODE CUSTOMIZADO (ESTILO LOVABLE) ---
 st.markdown("""
+    <style>
+        /* Fundo principal e cores de texto */
+        .stApp { background-color: #121212; color: #E0E0E0; }
+        .stButton>button { background-color: #FFB300; color: #000; border-radius: 8px; border: none; font-weight: bold; }
+        .stButton>button:hover { background-color: #FF8F00; color: #fff; }
+        .stTextInput>div>div>input { background-color: #1E1E1E; color: #FFB300; border-color: #333; }
+        section[data-testid="stSidebar"] { background-color: #1B1B1B; }
+        .stMetric { background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333; }
+        /* Anti-tradutor */
+        head { display: none; }
+    </style>
     <head><meta name="google" content="notranslate"></head>
-    <script>
-        document.documentElement.lang = 'pt-br';
-        document.documentElement.classList.add('notranslate');
-    </script>
 """, unsafe_allow_html=True)
 
-# --- 2. CONEXÃO COM O SUPABASE ---
+# --- CONEXÃO COM O SUPABASE ---
 @st.cache_resource
 def conectar_supabase():
     try:
@@ -28,177 +41,146 @@ def conectar_supabase():
         key = st.secrets["supabase"]["key"]
         return create_client(url, key)
     except Exception as e:
-        st.error(f"Erro de conexão com a nuvem: {e}")
+        st.sidebar.error("⚠️ Erro nos Secrets do Supabase")
         return None
 
 supabase = conectar_supabase()
 
-# --- 3. TRADUÇÕES ---
-GENEROS_BASE = ["Ficção", "Infantil", "Juvenil", "Didático", "Poesia", "História", "Ciências", "Artes", "Gibis/HQ", "Religião"]
-TRADUCAO_GENEROS = {"Fiction": "Ficção", "Juvenile Fiction": "Ficção Juvenil", "Education": "Didático", "History": "História", "Science": "Ciências", "General": "Geral"}
+# --- FUNÇÕES DE LÓGICA ---
 
-def traduzir_genero(genero_ingles):
-    if not genero_ingles: return "Geral"
-    return TRADUCAO_GENEROS.get(genero_ingles, genero_ingles)
-
-# --- 4. FUNÇÕES DE BUSCA (AQUI ESTÁ A MUDANÇA) ---
+def extrair_isbn_de_texto(texto):
+    """Tenta achar um ISBN de 10 ou 13 dígitos em uma URL ou texto de QR Code"""
+    match = re.search(r'(\d{10,13})', texto)
+    return match.group(1) if match else None
 
 def buscar_dados_livro(isbn):
-    """Tenta Google Books e depois Open Library como backup"""
+    """Busca com Fallback (Google -> OpenLibrary) e suporte a Sumário"""
     isbn = str(isbn).strip()
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
-    # 1. TENTA GOOGLE BOOKS
+    # 1. GOOGLE BOOKS (Melhor para sinopses e categorias)
     try:
-        url_google = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
-        res = requests.get(url_google, headers=headers, timeout=5)
+        res = requests.get(f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}", timeout=5)
         if res.status_code == 200:
             dados = res.json()
             if "items" in dados:
                 info = dados["items"][0]["volumeInfo"]
                 return {
-                    "titulo": info.get("title", "Título não encontrado"),
+                    "titulo": info.get("title", "Título Desconhecido"),
                     "autor": ", ".join(info.get("authors", ["Desconhecido"])),
-                    "sinopse": info.get("description", "Sem sinopse disponível"),
-                    "genero": traduzir_genero(info.get("categories", ["General"])[0]),
+                    "sinopse": info.get("description", "Sinopse indisponível no Google Books."),
+                    "genero": info.get("categories", ["Geral"])[0],
                     "fonte": "Google Books"
                 }
     except: pass
 
-    # 2. TENTA OPEN LIBRARY (BACKUP GRATUITO)
+    # 2. OPEN LIBRARY (Backup)
     try:
-        url_ol = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data"
-        res = requests.get(url_ol, headers=headers, timeout=5)
+        res = requests.get(f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data", timeout=5)
         if res.status_code == 200:
             dados = res.json()
             key = f"ISBN:{isbn}"
             if key in dados:
                 info = dados[key]
                 return {
-                    "titulo": info.get("title", "Título não encontrado"),
-                    "autor": ", ".join([a['name'] for a in info.get("authors", [{"name": "Desconhecido"}])]),
-                    "sinopse": "Sumário não disponível nesta base.",
+                    "titulo": info.get("title", "Título Desconhecido"),
+                    "autor": ", ".join([a['name'] for a in info.get("authors", [])]) or "Desconhecido",
+                    "sinopse": "Sinopse não encontrada (Open Library).",
                     "genero": "Geral",
                     "fonte": "Open Library"
                 }
     except: pass
-
     return None
 
-def get_generos_dinamicos():
-    try:
-        res = supabase.table("livros_acervo").select("genero").execute()
-        generos_nuvem = [d['genero'] for d in res.data] if res.data else []
-        lista = list(set(GENEROS_BASE + generos_nuvem))
-        lista = [g for g in lista if g]; lista.sort(); lista.append("➕ CADASTRAR NOVO GÊNERO")
-        return lista
-    except: return GENEROS_BASE + ["➕ CADASTRAR NOVO GÊNERO"]
-
-# --- 5. INTERFACE ---
-if "isbn_detectado" not in st.session_state: st.session_state.isbn_detectado = ""
-if "reset_count" not in st.session_state: st.session_state.reset_count = 0
-
-st.sidebar.title("📚 Acervo Cloud")
-if supabase: st.sidebar.success("✅ Supabase Conectado")
-
-menu = st.sidebar.selectbox("Navegação", ["Entrada de Livros", "Ver Acervo e Exportar"])
-
-if menu == "Entrada de Livros":
-    st.header("🚚 Entrada de Volumes")
+def detectar_codigo(image_file):
+    """Detecta tanto Barcode quanto QR Code"""
+    file_bytes = np.asarray(bytearray(image_file.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, 1)
     
-    foto_upload = st.file_uploader("📷 Foto do código de barras", type=['png', 'jpg', 'jpeg'], key=f"up_{st.session_state.reset_count}")
-    
-    if foto_upload:
-        with st.spinner("Analisando código..."):
-            file_bytes = np.asarray(bytearray(foto_upload.read()), dtype=np.uint8)
-            img = cv2.imdecode(file_bytes, 1)
-            # Redimensionamento
-            if img.shape[1] > 1000:
-                scale = 1000 / img.shape[1]
-                img = cv2.resize(img, (1000, int(img.shape[0] * scale)))
-            
-            detector = cv2.barcode.BarcodeDetector()
-            resultado = detector.detectAndDecode(img)
-            
-            codigo_lido = ""
-            if resultado and len(resultado) > 0:
-                for item in resultado:
-                    if isinstance(item, (list, tuple, np.ndarray)) and len(item) > 0:
-                        if isinstance(item[0], str) and len(item[0]) > 5:
-                            codigo_lido = item[0]
-                            break
-            
-            if codigo_lido:
-                st.success(f"✅ Código detectado: {codigo_lido}")
-                if st.button("Confirmar e Carregar Dados"):
-                    st.session_state.isbn_detectado = codigo_lido
-                    st.session_state.reset_count += 1
-                    st.rerun()
-            else: st.error("Não detectamos o código. Tente centralizar mais.")
+    # 1. Tentar QR Code Primeiro
+    qr_detector = cv2.QRCodeDetector()
+    val, pts, st_qr = qr_detector.detectAndDecode(img)
+    if val:
+        isbn_tentativa = extrair_isbn_de_texto(val)
+        return isbn_tentativa if isbn_tentativa else val
 
-    st.divider()
-
-    isbn_input = st.text_input("ISBN Confirmado:", value=st.session_state.isbn_detectado, key=f"field_{st.session_state.reset_count}")
-
-    if isbn_input:
-        isbn_limpo = str(isbn_input).strip()
-        # Verifica se já existe
-        res_check = supabase.table("livros_acervo").select("*").eq("isbn", isbn_limpo).execute()
+    # 2. Tentar Código de Barras
+    barcode_detector = cv2.barcode.BarcodeDetector()
+    ok, decoded_info, decoded_type, _ = barcode_detector.detectAndDecode(img)
+    if ok and decoded_info:
+        return decoded_info[0]
         
-        if res_check.data:
-            # --- JÁ EXISTE ---
-            item = res_check.data[0]
-            st.info(f"📖 Título: {item['titulo']} (Já cadastrado)")
-            with st.form("form_inc"):
-                qtd_add = st.number_input("Adicionar exemplares?", min_value=1, value=1)
-                if st.form_submit_button("Atualizar na Nuvem"):
-                    nova_qtd = int(item['quantidade']) + qtd_add
-                    supabase.table("livros_acervo").update({"quantidade": nova_qtd}).eq("isbn", isbn_limpo).execute()
-                    st.success("Estoque atualizado!")
-                    time.sleep(1); st.session_state.isbn_detectado = ""; st.session_state.reset_count += 1; st.rerun()
-        else:
-            # --- NOVO LIVRO (API) ---
-            with st.spinner("Buscando dados em servidores bibliográficos..."):
-                dados = buscar_dados_livro(isbn_limpo)
-                if not dados:
-                    dados = {"titulo": "", "autor": "", "sinopse": "", "genero": "Geral", "fonte": "Manual"}
-                
-                st.write(f"### ✨ Novo Cadastro (Fonte: {dados['fonte']})")
-                with st.form("form_novo"):
-                    t_f = st.text_input("Título", dados['titulo'])
-                    a_f = st.text_input("Autor", dados['autor'])
-                    lista_gen = get_generos_dinamicos()
-                    idx_def = lista_gen.index(dados['genero']) if dados['genero'] in lista_gen else 0
-                    g_sel = st.selectbox("Gênero", options=lista_gen, index=idx_def)
-                    g_novo = st.text_input("Se cadastrou novo, digite aqui:")
-                    s_f = st.text_area("Sinopse", dados['sinopse'], height=150)
-                    q_f = st.number_input("Quantidade inicial", min_value=1, value=1)
-                    
-                    if st.form_submit_button("🚀 Salvar no Supabase"):
-                        g_final = g_novo.strip().capitalize() if g_sel == "➕ CADASTRAR NOVO GÊNERO" else g_sel
-                        if g_final in ["", "➕ CADASTRAR NOVO GÊNERO"]:
-                            st.warning("Especifique um gênero.")
-                        else:
-                            supabase.table("livros_acervo").insert({
-                                "isbn": isbn_limpo, "titulo": t_f, "autor": a_f, 
-                                "sinopse": s_f, "genero": g_final, "quantidade": q_f,
-                                "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')
-                            }).execute()
-                            st.success("Salvo com sucesso!")
-                            time.sleep(1); st.session_state.isbn_detectado = ""; st.session_state.reset_count += 1; st.rerun()
+    return None
 
-elif menu == "Ver Acervo e Exportar":
-    st.header("📊 Acervo Nuvem")
+# --- INTERFACE PRINCIPAL ---
+if "isbn_sessao" not in st.session_state: st.session_state.isbn_sessao = ""
+
+st.sidebar.title("📚 BookScan Hub")
+menu = st.sidebar.radio("Menu", ["Escanear Livro", "Acervo Completo"])
+
+if menu == "Escanear Livro":
+    st.title("📷 Scanner de Acervo")
+    st.write("Aponte para o **Código de Barras** ou **QR Code** do livro.")
+    
+    arquivo_foto = st.file_uploader("Upload da foto", type=['jpg', 'jpeg', 'png'])
+    
+    if arquivo_foto:
+        codigo = detectar_codigo(arquivo_foto)
+        if codigo:
+            st.session_state.isbn_sessao = codigo
+            st.success(f"Código Identificado: {codigo}")
+        else:
+            st.error("❌ Não foi possível ler o código. Tente uma foto mais nítida.")
+
+    isbn_confirmado = st.text_input("Confirme o ISBN/Código:", value=st.session_state.isbn_sessao)
+
+    if isbn_confirmado:
+        # Busca no banco para ver se atualiza estoque ou cadastra novo
+        try:
+            res_db = supabase.table("livros_acervo").select("*").eq("isbn", isbn_confirmado).execute()
+            
+            if res_db.data:
+                item = res_db.data[0]
+                st.info(f"📖 Livro encontrado: **{item['titulo']}**")
+                qtd = st.number_input("Quantos exemplares adicionar?", min_value=1, value=1)
+                if st.button("➕ Atualizar Estoque"):
+                    nova_qtd = int(item['quantidade']) + qtd
+                    supabase.table("livros_acervo").update({"quantidade": nova_qtd}).eq("isbn", isbn_confirmado).execute()
+                    st.success("Estoque atualizado na nuvem!")
+                    st.session_state.isbn_sessao = ""
+            else:
+                # Busca API
+                with st.spinner("Buscando metadados..."):
+                    info = buscar_dados_livro(isbn_confirmado)
+                    if not info:
+                        info = {"titulo": "", "autor": "", "sinopse": "", "genero": "Geral", "fonte": "Manual"}
+                    
+                    st.warning(f"✨ Novo livro detectado via {info['fonte']}")
+                    with st.form("novo_livro"):
+                        tit = st.text_input("Título", info['titulo'])
+                        aut = st.text_input("Autor", info['autor'])
+                        gen = st.text_input("Gênero", info['genero'])
+                        sin = st.text_area("Sinopse / Sumário", info['sinopse'])
+                        qtd_ini = st.number_input("Quantidade", min_value=1, value=1)
+                        
+                        if st.form_submit_button("🚀 Cadastrar na Nuvem"):
+                            supabase.table("livros_acervo").insert({
+                                "isbn": isbn_confirmado, "titulo": tit, "autor": aut,
+                                "genero": gen, "sinopse": sin, "quantidade": qtd_ini,
+                                "data_cadastro": datetime.now().isoformat()
+                            }).execute()
+                            st.success("Livro cadastrado com sucesso!")
+                            st.session_state.isbn_sessao = ""
+        except Exception as e:
+            st.error(f"Erro na nuvem: {e}. Verifique as permissões (RLS) no Supabase.")
+
+elif menu == "Acervo Completo":
+    st.title("📊 Gestão de Acervo")
     res = supabase.table("livros_acervo").select("*").execute()
-    df = pd.DataFrame(res.data)
-    if not df.empty:
-        c1, c2 = st.columns(2)
-        c1.metric("Títulos", len(df)); c2.metric("Volumes", df['quantidade'].sum())
-        st.dataframe(df[['titulo', 'autor', 'genero', 'quantidade']], width='stretch')
-        if st.button("📥 Gerar Excel"):
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                for g in sorted(df['genero'].unique()):
-                    aba = "".join(c for c in str(g) if c.isalnum() or c==' ')[:30]
-                    df[df['genero'] == g][['titulo', 'sinopse', 'autor', 'quantidade']].to_excel(writer, index=False, sheet_name=aba)
-            st.download_button(label="Baixar Excel", data=output.getvalue(), file_name="Acervo.xlsx")
+    if res.data:
+        df = pd.DataFrame(res.data)
+        col1, col2 = st.columns(2)
+        col1.metric("Total de Títulos", len(df))
+        col2.metric("Total de Exemplares", df['quantidade'].sum())
+        st.dataframe(df[['isbn', 'titulo', 'autor', 'genero', 'quantidade']], use_container_width=True)
+    else:
+        st.info("O acervo está vazio.")
