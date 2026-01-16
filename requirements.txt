@@ -1,0 +1,8 @@
+streamlit
+pandas
+requests
+supabase
+numpy
+opencv-python-headless
+Pillow
+openpyxl
