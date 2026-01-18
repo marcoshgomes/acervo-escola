@@ -4,17 +4,15 @@ import requests
 import time
 import json
 import numpy as np
-import cv2
 from io import BytesIO
 from datetime import datetime
-from PIL import Image
 from supabase import create_client, Client
 import streamlit.components.v1 as components
 
 # =================================================================
 # 1. CONFIGURAÇÃO E PROTEÇÃO ANTI-TRADUTOR
 # =================================================================
-st.set_page_config(page_title="Acervo Inteligente Mara Cristina", layout="centered", page_icon="📚")
+st.set_page_config(page_title="Acervo Inteligente Cloud", layout="centered", page_icon="📚")
 
 st.markdown("""
     <head><meta name="google" content="notranslate"></head>
@@ -40,7 +38,7 @@ def conectar_supabase():
 supabase = conectar_supabase()
 
 # =================================================================
-# 3. DICIONÁRIO E FUNÇÕES DE APOIO
+# 3. TRADUÇÕES E APOIO
 # =================================================================
 GENEROS_BASE = ["Ficção", "Infantil", "Juvenil", "Didático", "Poesia", "História", "Ciências", "Artes", "Gibis/HQ", "Religião", "Filosofia"]
 TRADUCAO_GENEROS = {"Fiction": "Ficção", "Education": "Didático", "History": "História", "General": "Geral"}
@@ -49,42 +47,71 @@ def traduzir_genero(genero_ingles):
     if not genero_ingles: return "Geral"
     return TRADUCAO_GENEROS.get(genero_ingles, genero_ingles)
 
-def get_generos_dinamicos():
-    try:
-        res = supabase.table("livros_acervo").select("genero").execute()
-        generos_na_nuvem = [d['genero'] for d in res.data] if res.data else []
-        lista_final = list(set(GENEROS_BASE + generos_na_nuvem))
-        lista_final = [g for g in lista_final if g]; lista_final.sort(); lista_final.append("➕ CADASTRAR NOVO GÊNERO")
-        return lista_final
-    except: return GENEROS_BASE + ["➕ CADASTRAR NOVO GÊNERO"]
-
 # =================================================================
-# 4. COMPONENTE SCANNER REAL-TIME (CÂMERA TRASEIRA)
+# 4. COMPONENTE SCANNER PROFISSIONAL (MOBILE-FIRST)
 # =================================================================
-def real_time_barcode_scanner():
-    """Scanner em JS que força a câmera traseira e lê em tempo real"""
-    st.subheader("📷 Leitor de Código de Barras")
-    st.info("Aponte a câmera traseira para o código de barras do livro.")
+def camera_barcode_scanner():
+    """Scanner que para ao ler e envia o código para o campo de texto"""
     
+    # Captura o ISBN via URL (truque para comunicação JS -> Python)
+    query_params = st.query_params
+    isbn_na_url = query_params.get("isbn", "")
+
+    if isbn_na_url:
+        st.session_state.isbn_detectado = isbn_na_url
+        # Limpa a URL para não ficar em loop
+        st.query_params.clear()
+        st.rerun()
+
+    st.subheader("📷 Leitor Digital")
+    
+    # HTML do Scanner com lógica de parar câmera e botão de confirmação
     scanner_html = """
-    <div id="reader" style="width:100%; border-radius:12px; border: 2px solid #d97706; overflow:hidden;"></div>
-    <div id="result" style="margin-top:10px; font-weight:bold; color:green; font-size:1.2em; text-align:center;"></div>
+    <div id="reader-container" style="width:100%; font-family: sans-serif; text-align:center;">
+        <div id="reader" style="width:100%; border-radius:10px; border: 2px solid #d97706; overflow:hidden;"></div>
+        <div id="scanned-result-container" style="display:none; padding:20px; border:2px solid #22c55e; border-radius:10px; margin-top:10px; background:#f0fdf4;">
+            <p style="margin:0; color:#166534; font-weight:bold;">CÓDIGO IDENTIFICADO:</p>
+            <h2 id="isbn-val" style="margin:10px 0; color:#15803d;">---</h2>
+            <button onclick="confirmarCodigo()" style="background:#22c55e; color:white; border:none; padding:12px 25px; border-radius:5px; font-weight:bold; cursor:pointer; width:100%; font-size:1.1em;">✅ CONFIRMAR E CARREGAR</button>
+            <button onclick="resetarScanner()" style="background:none; color:#666; border:none; margin-top:10px; text-decoration:underline; cursor:pointer;">Tentar novamente</button>
+        </div>
+    </div>
     
     <script src="https://unpkg.com/html5-qrcode"></script>
     <script>
+        let html5QrCode = new Html5Qrcode("reader");
+        let lastResult = "";
+
         function onScanSuccess(decodedText, decodedResult) {
-            document.getElementById('result').innerText = "CÓDIGO CAPTURADO: " + decodedText;
-            // Efeito sonoro básico (beep) se possível
-            window.parent.postMessage({type: 'barcode_result', value: decodedText}, '*');
+            lastResult = decodedText;
+            // Para a câmera imediatamente
+            html5QrCode.stop().then(() => {
+                document.getElementById('reader').style.display = 'none';
+                document.getElementById('scanned-result-container').style.display = 'block';
+                document.getElementById('isbn-val').innerText = decodedText;
+                
+                // Tenta vibrar o celular (sucesso)
+                if (navigator.vibrate) navigator.vibrate(200);
+            });
         }
 
-        const html5QrCode = new Html5Qrcode("reader");
-        const config = { fps: 15, qrbox: {width: 300, height: 150} };
+        function confirmarCodigo() {
+            // Envia para o Streamlit via URL
+            const url = new URL(window.parent.location.href);
+            url.searchParams.set("isbn", lastResult);
+            window.parent.location.href = url.href;
+        }
 
-        // Tenta iniciar especificamente com a câmera traseira (environment)
+        function resetarScanner() {
+            location.reload();
+        }
+
+        const config = { fps: 20, qrbox: {width: 280, height: 160} };
+        
+        // Inicia forçando câmera traseira
         html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess)
         .catch(err => {
-            // Se falhar a traseira (ex: PC), tenta a padrão
+            // Backup para câmera frontal caso falte a traseira (ex: Computador)
             html5QrCode.start({ facingMode: "user" }, config, onScanSuccess);
         });
     </script>
@@ -92,7 +119,7 @@ def real_time_barcode_scanner():
     components.html(scanner_html, height=450)
 
 # =================================================================
-# 5. SEGURANÇA E CONTROLE DE PERFIS
+# 5. SEGURANÇA E PERFIS
 # =================================================================
 if "perfil" not in st.session_state: st.session_state.perfil = "Aluno"
 if "reset_count" not in st.session_state: st.session_state.reset_count = 0
@@ -110,7 +137,8 @@ def verificar_senha():
     elif senha == SENHA_PROFESSOR:
         st.session_state.perfil = "Professor"
         st.session_state.mostrar_login = False
-    else: st.sidebar.error("Senha inválida")
+    else:
+        st.sidebar.error("Senha inválida")
 
 st.sidebar.title("📚 Acervo Digital")
 st.sidebar.write(f"Usuário: **{st.session_state.perfil}**")
@@ -130,18 +158,22 @@ if st.session_state.perfil == "Diretor": opcoes_menu.append("Curadoria Inteligen
 menu = st.sidebar.selectbox("Navegação:", opcoes_menu)
 
 # =================================================================
-# 6. ABA: ENTRADA DE LIVROS
+# 6. ABA: ENTRADA DE LIVROS (SCANNER REESTRUTURADO)
 # =================================================================
 if menu == "Entrada de Livros":
     st.header("🚚 Entrada de Volumes")
     
-    # Scanner em Tempo Real (Câmera Traseira)
-    real_time_barcode_scanner()
+    # Exibe o Scanner
+    camera_barcode_scanner()
 
-    st.write("---")
-    # Campo manual para caso o scanner detecte mas não preencha automaticamente (devido limitações do Streamlit)
-    # ou para digitação manual direta.
-    isbn_input = st.text_input("Confirme o ISBN lido ou digite aqui:", key=f"field_{st.session_state.reset_count}")
+    st.divider()
+    
+    # Este campo é preenchido automaticamente ao clicar em "Confirmar" no scanner
+    isbn_input = st.text_input(
+        "ISBN Confirmado (Confira se o número está correto):", 
+        value=st.session_state.isbn_detectado, 
+        key=f"field_{st.session_state.reset_count}"
+    )
 
     if isbn_input:
         isbn_limpo = str(isbn_input).strip()
@@ -151,10 +183,13 @@ if menu == "Entrada de Livros":
             item = res_check.data[0]
             st.info(f"📖 {item['titulo']} (Já cadastrado)")
             with st.form("form_inc"):
-                qtd_add = st.number_input("Adicionar exemplares?", 1)
+                qtd_add = st.number_input("Adicionar unidades:", 1)
                 if st.form_submit_button("Atualizar Estoque"):
                     supabase.table("livros_acervo").update({"quantidade": int(item['quantidade']) + qtd_add}).eq("isbn", isbn_limpo).execute()
-                    st.success("Estoque atualizado!"); time.sleep(1); st.session_state.reset_count += 1; st.rerun()
+                    st.success("Estoque atualizado!"); time.sleep(1)
+                    st.session_state.isbn_detectado = ""
+                    st.session_state.reset_count += 1
+                    st.rerun()
         else:
             with st.spinner("Buscando dados bibliográficos..."):
                 headers = {"User-Agent": "Mozilla/5.0"}
@@ -172,18 +207,16 @@ if menu == "Entrada de Livros":
                     st.write("### ✨ Novo Cadastro")
                     t_f = st.text_input("Título", dados['titulo'])
                     a_f = st.text_input("Autor", dados['autor'])
-                    g_sel = st.selectbox("Gênero", options=get_generos_dinamicos())
-                    g_novo = st.text_input("Se novo gênero, digite aqui:")
+                    g_sel = st.selectbox("Gênero", options=GENEROS_BASE + ["➕ CADASTRAR NOVO GÊNERO"])
+                    g_novo = st.text_input("Novo Gênero (se aplicável):")
                     s_f = st.text_area("Sinopse", dados['sinopse'], height=100)
                     q_f = st.number_input("Quantidade inicial", 1)
-                    if st.form_submit_button("🚀 Salvar no Banco de Dados"):
+                    if st.form_submit_button("🚀 Salvar"):
                         gen_final = g_novo.strip().capitalize() if g_sel == "➕ CADASTRAR NOVO GÊNERO" else g_sel
                         supabase.table("livros_acervo").insert({"isbn": isbn_limpo, "titulo": t_f, "autor": a_f, "sinopse": s_f, "genero": gen_final, "quantidade": q_f, "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')}).execute()
-                        st.success("Salvo com sucesso!"); time.sleep(1); st.session_state.reset_count += 1; st.rerun()
+                        st.success("Salvo!"); time.sleep(1); st.session_state.isbn_detectado = ""; st.session_state.reset_count += 1; st.rerun()
 
-# =================================================================
-# 7. ABA: GESTÃO DO ACERVO
-# =================================================================
+# --- As abas de GESTÃO e CURADORIA permanecem idênticas ao código anterior ---
 elif menu == "Gestão do Acervo":
     st.header("📊 Painel de Gestão")
     tab_view, tab_import = st.tabs(["📋 Lista e Edição", "📥 Importar Planilha do Diretor"])
@@ -203,6 +236,7 @@ elif menu == "Gestão do Acervo":
                     id_sel = int(livro_sel.split("| ID:")[1])
                     item = df[df['id'] == id_sel].iloc[0]
                     with st.form("ed_form"):
+                        st.write("### ✏️ Corrigir Dados")
                         nt = st.text_input("Título", item['titulo'])
                         na = st.text_input("Autor", item['autor'])
                         ni = st.text_input("ISBN", item['isbn'])
@@ -222,12 +256,14 @@ elif menu == "Gestão do Acervo":
             st.download_button("Baixar Arquivo Excel", output.getvalue(), "Acervo.xlsx")
 
     with tab_import:
-        if st.session_state.perfil != "Diretor": st.warning("Acesso restrito ao Diretor.")
+        if st.session_state.perfil != "Diretor":
+            st.warning("Acesso restrito ao Diretor.")
         else:
-            f_diretor = st.file_uploader("Selecione a planilha 'Livros Escaneados'", type=['xlsx'])
-            if f_diretor:
+            st.subheader("Upload da planilha 'Livros Escaneados'")
+            file_diretor = st.file_uploader("Selecione o arquivo Excel", type=['xlsx'])
+            if file_diretor:
                 try:
-                    df_up = pd.read_excel(f_diretor, sheet_name='livros escaneados')
+                    df_up = pd.read_excel(file_diretor, sheet_name='livros escaneados')
                     res_db = supabase.table("livros_acervo").select("isbn, titulo").execute()
                     df_banco = pd.DataFrame(res_db.data)
                     novos, conf = [], []
@@ -238,23 +274,20 @@ elif menu == "Gestão do Acervo":
                         match = False
                         if not df_banco.empty:
                             if (i_up != "" and i_up in df_banco['isbn'].values) or (df_banco['titulo'].str.lower().values == t_up.lower()).any(): match = True
-                        dados = {"isbn": i_up, "titulo": t_up, "autor": str(row.get('Autor(es)', 'Pendente')), "sinopse": str(row.get('Sinopse', 'Pendente')), "genero": str(row.get('Categorias', 'Geral')), "quantidade": 1, "data_cadastro": datetime.now().strftime('%d/%m/%Y')}
+                        dados = {"isbn": i_up, "titulo": t_up, "autor": str(row.get('Autor(es)', 'Pendente')), "sinopse": str(row.get('Sinopse', 'Pendente')), "genero": str(row.get('Categorias', 'Geral')), "quantidade": 1, "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')}
                         if match: conf.append(dados)
                         else: novos.append(dados)
                     if novos:
                         st.success(f"{len(novos)} novos livros.")
-                        if st.button("🚀 Importar Novos"): supabase.table("livros_acervo").insert(novos).execute(); st.success("Importado!"); st.rerun()
+                        if st.button("🚀 Importar Novos"): supabase.table("livros_acervo").insert(novos).execute(); st.rerun()
                     if conf:
                         st.warning(f"{len(conf)} duplicados.")
                         st.dataframe(pd.DataFrame(conf)[['titulo', 'isbn']])
                         if st.button("➕ Forçar Importação"): supabase.table("livros_acervo").insert(conf).execute(); st.rerun()
                 except Exception as e: st.error(f"Erro: {e}")
 
-# =================================================================
-# 8. CURADORIA INTELIGENTE (IA - CASCATA GOOGLE + GEMINI 2.0)
-# =================================================================
 elif menu == "Curadoria Inteligente (IA)":
-    st.header("🪄 Curadoria Inteligente")
+    st.header("🪄 Curadoria em Cascata")
     api_key_gemini = st.text_input("Insira sua Gemini API Key:", type="password")
     if api_key_gemini:
         res = supabase.table("livros_acervo").select("*").or_("autor.eq.Pendente,sinopse.eq.Pendente").execute()
@@ -266,27 +299,27 @@ elif menu == "Curadoria Inteligente (IA)":
                 api_key_google = st.secrets["google"]["books_api_key"]
                 for i, row in df_pend.iterrows():
                     status_txt.text(f"Limpando: {row['titulo']}...")
-                    f_autor, f_sinopse, f_genero = row['autor'], row['sinopse'], row['genero']
+                    f_a, f_s, f_g = row['autor'], row['sinopse'], row['genero']
                     try:
                         url_g = f"https://www.googleapis.com/books/v1/volumes?q=intitle:{row['titulo']}&key={api_key_google}"
                         rg = requests.get(url_g, headers={"User-Agent": "Mozilla/5.0"}, timeout=5).json()
                         if "items" in rg:
                             info = rg["items"][0]["volumeInfo"]
-                            if f_autor == "Pendente": f_autor = ", ".join(info.get("authors", ["Pendente"]))
-                            if f_sinopse == "Pendente": f_sinopse = info.get("description", "Pendente")
+                            if f_a == "Pendente": f_a = ", ".join(info.get("authors", ["Pendente"]))
+                            if f_s == "Pendente": f_s = info.get("description", "Pendente")
                     except: pass
-                    if f_autor == "Pendente" or f_sinopse == "Pendente" or len(f_sinopse) < 30:
-                        prompt = f"Livro: {row['titulo']}. Responda apenas: Autor; Sinopse Curta; Gênero Literário. Separe por ';'."
+                    if f_a == "Pendente" or f_s == "Pendente" or len(f_s) < 30:
+                        prompt = f"Livro: {row['titulo']}. Autor Atual: {f_a}. Retorne apenas: Autor; Sinopse(3 linhas); Gênero. Use ';' como separador."
                         url_gemini = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={api_key_gemini}"
                         try:
                             resp = requests.post(url_gemini, headers={'Content-Type': 'application/json'}, data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}), timeout=10)
                             if resp.status_code == 200:
                                 partes = resp.json()['candidates'][0]['content']['parts'][0]['text'].split(";")
                                 if len(partes) >= 3:
-                                    if f_autor == "Pendente": f_autor = partes[0].strip()
-                                    f_sinopse, f_genero = partes[1].strip(), partes[2].strip().capitalize()
+                                    if f_a == "Pendente": f_a = partes[0].strip()
+                                    f_s, f_g = partes[1].strip(), partes[2].strip().capitalize()
                         except: pass
-                    supabase.table("livros_acervo").update({"autor": f_autor, "sinopse": f_sinopse, "genero": f_genero}).eq("id", row['id']).execute()
+                    supabase.table("livros_acervo").update({"autor": f_a, "sinopse": f_s, "genero": f_g}).eq("id", row['id']).execute()
                     prog.progress((i + 1) / len(df_pend))
-                st.success("Concluído!"); st.rerun()
+                st.success("Curadoria concluída!"); time.sleep(1); st.rerun()
         else: st.success("Tudo em ordem!")
