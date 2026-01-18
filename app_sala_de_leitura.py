@@ -9,6 +9,7 @@ from io import BytesIO
 from datetime import datetime
 from PIL import Image
 from supabase import create_client, Client
+import google.generativeai as genai
 
 # =================================================================
 # 1. CONFIGURAÇÃO E PROTEÇÃO ANTI-TRADUTOR
@@ -76,7 +77,8 @@ def verificar_senha():
     elif senha == SENHA_PROFESSOR:
         st.session_state.perfil = "Professor"
         st.session_state.mostrar_login = False
-    else: st.sidebar.error("Senha inválida")
+    else:
+        st.sidebar.error("Senha inválida")
 
 st.sidebar.title("📚 Acervo Digital")
 st.sidebar.write(f"Usuário: **{st.session_state.perfil}**")
@@ -162,126 +164,163 @@ if menu == "Entrada de Livros":
                         st.success("Livro salvo!"); time.sleep(1); st.session_state.isbn_detectado = ""; st.session_state.reset_count += 1; st.rerun()
 
 # =================================================================
-# 6. ABA: GESTÃO (COM EDIÇÃO DE TODOS OS CAMPOS)
+# 6. ABA: GESTÃO (ADAPTADA PARA PLANILHA DO DIRETOR)
 # =================================================================
 elif menu == "Gestão do Acervo":
     st.header("📊 Painel de Gestão")
-    res = supabase.table("livros_acervo").select("*").execute()
-    df = pd.DataFrame(res.data)
-    if not df.empty:
-        termo = st.text_input("🔍 Pesquisar por Título ou Autor:")
-        df_display = df[df['titulo'].str.contains(termo, case=False) | df['autor'].str.contains(termo, case=False)] if termo else df
-        st.dataframe(df_display[['titulo', 'autor', 'genero', 'quantidade', 'isbn']], use_container_width=True)
-        
-        with st.expander("📝 Editar Registro Completo"):
-            opcoes = df_display.apply(lambda x: f"{x['titulo']} | ID:{x['id']}", axis=1).tolist()
-            livro_sel = st.selectbox("Selecione para editar:", ["..."] + opcoes)
-            if livro_sel != "...":
-                id_sel = int(livro_sel.split("| ID:")[1])
-                item = df[df['id'] == id_sel].iloc[0]
-                with st.form("ed_form"):
-                    st.write("### ✏️ Corrigir Dados")
-                    nt = st.text_input("Título", item['titulo'])
-                    na = st.text_input("Autor", item['autor'])
-                    ni = st.text_input("ISBN", item['isbn'])
-                    ng = st.text_input("Gênero", item['genero'])
-                    ns = st.text_area("Sinopse", item['sinopse'], height=150)
-                    nq = st.number_input("Estoque", value=int(item['quantidade']))
-                    
-                    if st.form_submit_button("💾 Salvar Alterações"):
-                        supabase.table("livros_acervo").update({
-                            "titulo": nt, "autor": na, "isbn": ni, 
-                            "genero": ng, "sinopse": ns, "quantidade": nq
-                        }).eq("id", id_sel).execute()
-                        st.success("Dados atualizados!"); time.sleep(1); st.rerun()
+    tab_view, tab_import = st.tabs(["📋 Visualizar e Editar", "📥 Importar Planilha do Diretor"])
 
-        if st.button("📥 Gerar Excel"):
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as wr:
-                for g in df['genero'].unique():
-                    df[df['genero']==g][['titulo','sinopse','autor','quantidade']].to_excel(wr, index=False, sheet_name=str(g)[:30])
-            st.download_button("Baixar Excel", output.getvalue(), "Acervo.xlsx")
+    with tab_view:
+        res = supabase.table("livros_acervo").select("*").execute()
+        df = pd.DataFrame(res.data)
+        if not df.empty:
+            termo = st.text_input("🔍 Pesquisar por Título ou Autor:")
+            df_display = df[df['titulo'].str.contains(termo, case=False) | df['autor'].str.contains(termo, case=False)] if termo else df
+            st.dataframe(df_display[['titulo', 'autor', 'genero', 'quantidade', 'isbn']], use_container_width=True)
+            
+            with st.expander("📝 Editar Registro Completo"):
+                opcoes = df_display.apply(lambda x: f"{x['titulo']} | ID:{x['id']}", axis=1).tolist()
+                livro_sel = st.selectbox("Selecione para editar:", ["..."] + opcoes)
+                if livro_sel != "...":
+                    id_sel = int(livro_sel.split("| ID:")[1])
+                    item = df[df['id'] == id_sel].iloc[0]
+                    with st.form("ed_form"):
+                        nt = st.text_input("Título", item['titulo'])
+                        na = st.text_input("Autor", item['autor'])
+                        ni = st.text_input("ISBN", item['isbn'])
+                        ng = st.text_input("Gênero", item['genero'])
+                        ns = st.text_area("Sinopse", item['sinopse'], height=150)
+                        nq = st.number_input("Estoque", value=int(item['quantidade']))
+                        if st.form_submit_button("💾 Salvar Alterações"):
+                            supabase.table("livros_acervo").update({"titulo": nt, "autor": na, "isbn": ni, "genero": ng, "sinopse": ns, "quantidade": nq}).eq("id", id_sel).execute()
+                            st.success("Dados atualizados!"); time.sleep(1); st.rerun()
+
+    with tab_import:
+        if st.session_state.perfil != "Diretor":
+            st.warning("Apenas o Diretor pode importar planilhas externas.")
+        else:
+            st.subheader("Upload de 'Livros Escaneados'")
+            st.info("O sistema lerá a aba 'livros escaneados' da planilha do Diretor.")
+            file_diretor = st.file_uploader("Selecione o arquivo Excel", type=['xlsx'])
+            
+            if file_diretor:
+                try:
+                    # Lê especificamente a aba informada
+                    df_up = pd.read_excel(file_diretor, sheet_name='livros escaneados')
+                    
+                    # Buscar o banco atual para comparar duplicidade
+                    res_db = supabase.table("livros_acervo").select("isbn, titulo, autor").execute()
+                    df_banco = pd.DataFrame(res_db.data)
+                    
+                    novos_livros = []
+                    conflitos = []
+
+                    for _, row in df_up.iterrows():
+                        # Mapeamento exato das colunas da imagem
+                        isbn_up = str(row.get('ISBN', '')).strip().replace(".0", "")
+                        titulo_up = str(row.get('Título', '')).strip()
+                        autor_up = str(row.get('Autor(es)', 'Pendente')).strip()
+                        genero_up = str(row.get('Categorias', 'Geral')).strip()
+                        sinopse_up = str(row.get('Sinopse', 'Pendente')).strip()
+                        
+                        # Limpeza de termos "vazios" do Excel
+                        if isbn_up in ["nan", "N/A", ""]: isbn_up = ""
+                        if autor_up in ["nan", "N/A", "Não disponível", ""]: autor_up = "Pendente"
+                        if genero_up in ["nan", "N/A", ""]: genero_up = "Geral"
+                        if sinopse_up in ["nan", "N/A", "Não disponível", ""]: sinopse_up = "Pendente"
+
+                        # --- LÓGICA DE DUPLICIDADE ---
+                        match_isbn = False
+                        match_titulo_autor = False
+
+                        if not df_banco.empty:
+                            if isbn_up != "" and isbn_up in df_banco['isbn'].values:
+                                match_isbn = True
+                            
+                            # Checa Título + Autor ignorando maiúsculas
+                            filt = df_banco[(df_banco['titulo'].str.lower() == titulo_up.lower()) & 
+                                            (df_banco['autor'].str.lower() == autor_up.lower())]
+                            if not filt.empty:
+                                match_titulo_autor = True
+
+                        dados_prontos = {
+                            "isbn": isbn_up, "titulo": titulo_up, "autor": autor_up,
+                            "sinopse": sinopse_up, "genero": genero_up, "quantidade": 1,
+                            "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')
+                        }
+
+                        if match_isbn or match_titulo_autor:
+                            conflitos.append(dados_prontos)
+                        else:
+                            novos_livros.append(dados_prontos)
+
+                    # Interface de decisão
+                    if novos_livros:
+                        st.success(f"✨ Encontrados {len(novos_livros)} livros novos para importar.")
+                        if st.button("🚀 Confirmar Importação dos Novos"):
+                            supabase.table("livros_acervo").insert(novos_livros).execute()
+                            st.success("Novos livros cadastrados!"); time.sleep(1); st.rerun()
+
+                    if conflitos:
+                        st.warning(f"⚠️ Existem {len(conflitos)} livros que já possuem registro semelhante no banco.")
+                        df_conf = pd.DataFrame(conflitos)
+                        st.dataframe(df_conf[['titulo', 'autor', 'isbn']], use_container_width=True)
+                        
+                        if st.button("➕ Forçar Importação destes Duplicados"):
+                            supabase.table("livros_acervo").insert(conflitos).execute()
+                            st.success("Registros forçados com sucesso!"); time.sleep(1); st.rerun()
+
+                except Exception as e:
+                    st.error(f"Erro ao ler a planilha: {e}. Verifique se o nome da aba é 'livros escaneados'.")
 
 # =================================================================
-# 7. ABA: CURADORIA INTELIGENTE (GOOGLE BOOKS -> GEMINI 2.0)
+# 7. ABA: CURADORIA INTELIGENTE (IA)
 # =================================================================
 elif menu == "Curadoria Inteligente (IA)":
     st.header("🪄 Curadoria em Cascata")
-    st.write("1º Google Books (Oficial) ⮕ 2º Gemini (Inteligência Artificial)")
-    
     api_key_gemini = st.text_input("Insira sua Gemini API Key:", type="password")
     
     if api_key_gemini:
-        # Busca registros com "Pendente"
         res = supabase.table("livros_acervo").select("*").or_("autor.eq.Pendente,sinopse.eq.Pendente").execute()
         df_pend = pd.DataFrame(res.data)
         
         if not df_pend.empty:
             st.warning(f"Encontrados {len(df_pend)} registros para processar.")
-            if st.button("✨ Iniciar Processamento"):
+            if st.button("✨ Iniciar Processamento Inteligente"):
                 progresso = st.progress(0)
                 status_txt = st.empty()
-                
-                headers_google = {"User-Agent": "Mozilla/5.0"}
                 api_key_google = st.secrets["google"]["books_api_key"]
 
                 for i, row in df_pend.iterrows():
                     status_txt.text(f"Processando: {row['titulo']}...")
-                    
-                    final_autor = row['autor']
-                    final_sinopse = row['sinopse']
-                    final_genero = row['genero']
+                    f_autor, f_sinopse, f_genero = row['autor'], row['sinopse'], row['genero']
 
-                    # --- PASSO 1: TENTAR GOOGLE BOOKS (POR TÍTULO) ---
+                    # 1. Google Books (Oficial)
                     try:
                         url_g = f"https://www.googleapis.com/books/v1/volumes?q=intitle:{row['titulo']}&key={api_key_google}"
-                        res_g = requests.get(url_g, headers=headers_google, timeout=5).json()
-                        if "items" in res_g:
-                            g_info = res_g["items"][0]["volumeInfo"]
-                            if final_autor == "Pendente":
-                                final_autor = ", ".join(g_info.get("authors", ["Pendente"]))
-                            if final_sinopse == "Pendente":
-                                final_sinopse = g_info.get("description", "Pendente")
-                            final_genero = traduzir_genero(g_info.get("categories", [final_genero])[0])
+                        rg = requests.get(url_g, headers={"User-Agent": "Mozilla/5.0"}, timeout=5).json()
+                        if "items" in rg:
+                            info = rg["items"][0]["volumeInfo"]
+                            if f_autor == "Pendente": f_autor = ", ".join(info.get("authors", ["Pendente"]))
+                            if f_sinopse == "Pendente": f_sinopse = info.get("description", "Pendente")
+                            f_genero = traduzir_genero(info.get("categories", [f_genero])[0])
                     except: pass
 
-                    # --- PASSO 2: SE AINDA HÁ LACUNAS, USAR GEMINI COM O CONTEXTO ATUAL ---
-                    if final_autor == "Pendente" or final_sinopse == "Pendente" or len(final_sinopse) < 50:
-                        prompt_ia = f"""
-                        Complete os dados do livro.
-                        DADOS ATUAIS: Título: {row['titulo']}, Autor: {final_autor}.
-                        REGRAS: 
-                        1) Identifique o autor real. 
-                        2) Crie uma sinopse de 3 linhas envolvente. 
-                        3) Identifique o gênero.
-                        Responda APENAS os 3 itens separados por ';' (Autor; Sinopse; Gênero).
-                        """
-                        # Usando a URL que funcionou no seu outro programa (Gemini 2.0 Flash)
-                        url_gemini = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={api_key_gemini}"
-                        payload = {"contents": [{"parts": [{"text": prompt_ia}]}]}
-                        
+                    # 2. Gemini (Inteligência Artificial)
+                    if f_autor == "Pendente" or f_sinopse == "Pendente" or len(f_sinopse) < 30:
+                        prompt = f"Livro: {row['titulo']}. Autor Atual: {f_autor}. Retorne apenas: Autor; Sinopse(3 linhas); Gênero. Use ';' como separador."
+                        url_gemini = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={api_key_gemini}"
                         try:
-                            resp = requests.post(url_gemini, headers={'Content-Type': 'application/json'}, data=json.dumps(payload), timeout=10)
+                            resp = requests.post(url_gemini, headers={'Content-Type': 'application/json'}, data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}), timeout=10)
                             if resp.status_code == 200:
-                                res_ia = resp.json()['candidates'][0]['content']['parts'][0]['text']
-                                partes = res_ia.split(";")
+                                partes = resp.json()['candidates'][0]['content']['parts'][0]['text'].split(";")
                                 if len(partes) >= 3:
-                                    if final_autor == "Pendente": final_autor = partes[0].strip()
-                                    if final_sinopse == "Pendente" or len(final_sinopse) < 50: final_sinopse = partes[1].strip()
-                                    final_genero = partes[2].strip().capitalize()
+                                    if f_autor == "Pendente": f_autor = partes[0].strip()
+                                    f_sinopse = partes[1].strip()
+                                    f_genero = partes[2].strip().capitalize()
                         except: pass
 
-                    # --- PASSO 3: ATUALIZAR SUPABASE ---
-                    supabase.table("livros_acervo").update({
-                        "autor": final_autor,
-                        "sinopse": final_sinopse,
-                        "genero": final_genero
-                    }).eq("id", row['id']).execute()
-                    
+                    supabase.table("livros_acervo").update({"autor": f_autor, "sinopse": f_sinopse, "genero": f_genero}).eq("id", row['id']).execute()
                     progresso.progress((i + 1) / len(df_pend))
-                
-                status_txt.text("✅ Banco de dados atualizado!")
-                st.success("Curadoria concluída com sucesso.")
-                time.sleep(2); st.rerun()
-        else:
-            st.success("Todos os livros estão com dados completos!")
+                st.success("Curadoria concluída!"); time.sleep(1); st.rerun()
+        else: st.success("Banco de dados completo!")
