@@ -1,4 +1,14 @@
 import streamlit as st
+
+# =================================================================
+# 1. CAPTURA DE ISBN (DEVE SER A PRIMEIRA COISA NO CÓDIGO)
+# =================================================================
+# Verificamos se existe um ISBN na URL antes de carregar o resto
+if "isbn" in st.query_params:
+    st.session_state.isbn_detectado = st.query_params["isbn"]
+    # Limpa o parâmetro da URL para o navegador não ficar em loop
+    st.query_params.clear()
+
 import pandas as pd
 import requests
 import time
@@ -12,18 +22,10 @@ from supabase import create_client, Client
 import streamlit.components.v1 as components
 
 # =================================================================
-# 1. CONFIGURAÇÃO E CAPTURA DE ISBN (NO TOPO)
+# 2. CONFIGURAÇÃO E PROTEÇÃO ANTI-TRADUTOR
 # =================================================================
 st.set_page_config(page_title="Acervo Inteligente Cloud", layout="centered", page_icon="📚")
 
-# Lógica para capturar o ISBN enviado pelo Scanner via URL
-params = st.query_params
-if "isbn" in params:
-    st.session_state.isbn_detectado = params["isbn"]
-    # Limpa os parâmetros da URL para evitar loops
-    st.query_params.clear()
-
-# Proteção contra tradutor
 st.markdown("""
     <head><meta name="google" content="notranslate"></head>
     <script>
@@ -33,7 +35,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =================================================================
-# 2. CONEXÃO COM O BANCO DE DADOS (SUPABASE)
+# 3. CONEXÃO COM O BANCO DE DADOS (SUPABASE)
 # =================================================================
 @st.cache_resource
 def conectar_supabase():
@@ -48,7 +50,7 @@ def conectar_supabase():
 supabase = conectar_supabase()
 
 # =================================================================
-# 3. TRADUÇÕES E APOIO
+# 4. DICIONÁRIO E FUNÇÕES DE APOIO
 # =================================================================
 GENEROS_BASE = ["Ficção", "Infantil", "Juvenil", "Didático", "Poesia", "História", "Ciências", "Artes", "Gibis/HQ", "Religião", "Filosofia"]
 TRADUCAO_GENEROS = {"Fiction": "Ficção", "Education": "Didático", "History": "História", "General": "Geral"}
@@ -58,47 +60,45 @@ def traduzir_genero(genero_ingles):
     return TRADUCAO_GENEROS.get(genero_ingles, genero_ingles)
 
 # =================================================================
-# 4. COMPONENTE SCANNER (VERSÃO REFORÇADA PARA MOBILE)
+# 5. COMPONENTE SCANNER (VERSÃO REDIRECIONAMENTO FORÇADO)
 # =================================================================
-def camera_scanner_component():
-    """Scanner que força a câmera traseira e envia o código via URL"""
+def camera_barcode_scanner():
+    """Scanner que força a câmera traseira e recarrega a página com o ISBN"""
     st.subheader("📷 Leitor Digital")
     
-    # HTML e JS do Scanner
     scanner_html = """
     <div id="reader-container" style="width:100%; font-family: sans-serif; text-align:center;">
         <div id="reader" style="width:100%; border-radius:10px; border: 2px solid #d97706; overflow:hidden;"></div>
-        <div id="scanned-result" style="display:none; padding:20px; border:2px solid #22c55e; border-radius:10px; margin-top:10px; background:#f0fdf4;">
-            <p style="margin:0; color:#166534; font-weight:bold;">LIVRO IDENTIFICADO!</p>
-            <h2 id="isbn-display" style="margin:10px 0; color:#15803d; letter-spacing: 2px;">---</h2>
-            <button id="confirm-btn" style="background:#22c55e; color:white; border:none; padding:15px 25px; border-radius:8px; font-weight:bold; cursor:pointer; width:100%; font-size:1.2em;">✅ CONFIRMAR E CARREGAR</button>
-            <p onclick="location.reload()" style="margin-top:15px; color:#666; text-decoration:underline; cursor:pointer;">Tentar novamente</p>
+        <div id="result-box" style="display:none; padding:20px; border:2px solid #22c55e; border-radius:10px; margin-top:10px; background:#f0fdf4;">
+            <p style="margin:0; color:#166534; font-weight:bold;">LIVRO LIDO!</p>
+            <h2 id="isbn-txt" style="margin:15px 0; color:#15803d; letter-spacing: 2px;">---</h2>
+            <button id="confirm-link" style="background:#22c55e; color:white; border:none; padding:15px 25px; border-radius:8px; font-weight:bold; cursor:pointer; width:100%; font-size:1.2em;">✅ CONFIRMAR E CARREGAR</button>
         </div>
     </div>
     
     <script src="https://unpkg.com/html5-qrcode"></script>
     <script>
         const html5QrCode = new Html5Qrcode("reader");
-        let scannedCode = "";
+        let lastCode = "";
 
-        function onScanSuccess(decodedText, decodedResult) {
-            scannedCode = decodedText;
+        function onScanSuccess(decodedText) {
+            lastCode = decodedText;
             html5QrCode.stop().then(() => {
                 document.getElementById('reader').style.display = 'none';
-                document.getElementById('scanned-result').style.display = 'block';
-                document.getElementById('isbn-display').innerText = decodedText;
+                document.getElementById('result-box').style.display = 'block';
+                document.getElementById('isbn-txt').innerText = decodedText;
                 if (navigator.vibrate) navigator.vibrate(200);
             });
         }
 
-        // Ação do Botão: Redireciona a página principal enviando o ISBN na URL
-        document.getElementById('confirm-btn').addEventListener('click', function() {
-            const url = new URL(window.parent.location.href);
-            url.searchParams.set("isbn", scannedCode);
-            window.parent.location.href = url.href;
-        });
+        // Função do Botão: Faz a página principal navegar para ela mesma com o ISBN na URL
+        document.getElementById('confirm-link').onclick = function() {
+            const currentUrl = new URL(window.top.location.href.split('?')[0]);
+            currentUrl.searchParams.set("isbn", lastCode);
+            window.top.location.href = currentUrl.href;
+        };
 
-        const config = { fps: 20, qrbox: {width: 280, height: 160} };
+        const config = { fps: 20, qrbox: {width: 250, height: 150} };
         html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess)
         .catch(err => {
             html5QrCode.start({ facingMode: "user" }, config, onScanSuccess);
@@ -108,7 +108,7 @@ def camera_scanner_component():
     components.html(scanner_html, height=500)
 
 # =================================================================
-# 5. SEGURANÇA E PERFIS
+# 6. SEGURANÇA E PERFIS
 # =================================================================
 if "perfil" not in st.session_state: st.session_state.perfil = "Aluno"
 if "reset_count" not in st.session_state: st.session_state.reset_count = 0
@@ -133,25 +133,28 @@ st.sidebar.title("📚 Acervo Cloud")
 st.sidebar.write(f"Usuário: **{st.session_state.perfil}**")
 
 if st.session_state.perfil == "Aluno":
-    if st.sidebar.button("👤 Acesso Gestor do Sistema"):
+    if st.sidebar.button("👤 Acesso Gestor"):
         st.session_state.mostrar_login = not st.session_state.mostrar_login
     if st.session_state.mostrar_login:
         st.sidebar.text_input("Senha:", type="password", key="pwd_input", on_change=verificar_senha)
 else:
-    if st.sidebar.button("🚪 Sair (Logoff)"):
+    if st.sidebar.button("🚪 Sair"):
         st.session_state.perfil = "Aluno"; st.rerun()
 
 menu = st.sidebar.selectbox("Navegação:", ["Entrada de Livros", "Gestão do Acervo", "Curadoria Inteligente (IA)"] if st.session_state.perfil == "Diretor" else ["Entrada de Livros", "Gestão do Acervo"] if st.session_state.perfil == "Professor" else ["Entrada de Livros"])
 
 # =================================================================
-# 6. ABA: ENTRADA DE LIVROS
+# 7. ABA: ENTRADA DE LIVROS (FLUXO CORRIGIDO)
 # =================================================================
 if menu == "Entrada de Livros":
     st.header("🚚 Entrada de Volumes")
-    camera_scanner_component()
+    
+    # Scanner
+    camera_barcode_scanner()
+
     st.divider()
     
-    # Campo preenchido automaticamente pela captura da URL
+    # O valor aqui agora é alimentado pela captura da URL no topo do código
     isbn_input = st.text_input(
         "ISBN Confirmado:", 
         value=st.session_state.isbn_detectado, 
@@ -170,10 +173,9 @@ if menu == "Entrada de Livros":
                 if st.form_submit_button("Atualizar Estoque"):
                     supabase.table("livros_acervo").update({"quantidade": int(item['quantidade']) + qtd_add}).eq("isbn", isbn_limpo).execute()
                     st.success("Estoque atualizado!")
-                    time.sleep(1)
                     st.session_state.isbn_detectado = ""
                     st.session_state.reset_count += 1
-                    st.rerun()
+                    time.sleep(1); st.rerun()
         else:
             with st.spinner("Buscando dados no Google..."):
                 headers = {"User-Agent": "Mozilla/5.0"}
@@ -190,21 +192,18 @@ if menu == "Entrada de Livros":
                     t_f = st.text_input("Título", dados['titulo'])
                     a_f = st.text_input("Autor", dados['autor'])
                     g_sel = st.selectbox("Gênero", options=GENEROS_BASE + ["➕ CADASTRAR NOVO GÊNERO"])
-                    g_novo = st.text_input("Novo Gênero (opcional):")
+                    g_novo = st.text_input("Gênero novo:")
                     s_f = st.text_area("Sinopse", dados['sinopse'], height=100)
                     q_f = st.number_input("Quantidade inicial", 1)
-                    if st.form_submit_button("🚀 Salvar no Banco de Dados"):
+                    if st.form_submit_button("🚀 Salvar no Banco"):
                         gen_final = g_novo.strip().capitalize() if g_sel == "➕ CADASTRAR NOVO GÊNERO" else g_sel
                         supabase.table("livros_acervo").insert({"isbn": isbn_limpo, "titulo": t_f, "autor": a_f, "sinopse": s_f, "genero": gen_final, "quantidade": q_f, "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')}).execute()
                         st.success("Salvo!")
-                        time.sleep(1)
                         st.session_state.isbn_detectado = ""
                         st.session_state.reset_count += 1
-                        st.rerun()
+                        time.sleep(1); st.rerun()
 
-# =================================================================
-# 7. ABA: GESTÃO DO ACERVO
-# =================================================================
+# --- Outras abas (Gestão, IA) mantidas conforme versões anteriores ---
 elif menu == "Gestão do Acervo":
     st.header("📊 Painel de Gestão")
     tab_view, tab_import = st.tabs(["📋 Lista e Edição", "📥 Importar Planilha do Diretor"])
@@ -212,24 +211,19 @@ elif menu == "Gestão do Acervo":
         res = supabase.table("livros_acervo").select("*").execute()
         df = pd.DataFrame(res.data)
         if not df.empty:
-            termo = st.text_input("🔍 Localizar Livro:")
+            termo = st.text_input("🔍 Localizar:")
             df_disp = df[df['titulo'].str.contains(termo, case=False) | df['isbn'].str.contains(termo)] if termo else df
             st.dataframe(df_disp[['titulo', 'autor', 'genero', 'quantidade', 'isbn']], use_container_width=True)
-            with st.expander("📝 Editar Registro Completo"):
+            with st.expander("📝 Editar Registro"):
                 opcoes = df_disp.apply(lambda x: f"{x['titulo']} | ID:{x['id']}", axis=1).tolist()
-                livro_sel = st.selectbox("Selecione para editar:", ["..."] + opcoes)
+                livro_sel = st.selectbox("Escolha:", ["..."] + opcoes)
                 if livro_sel != "...":
-                    id_sel = int(livro_sel.split("| ID:")[1])
-                    item = df[df['id'] == id_sel].iloc[0]
+                    id_sel = int(livro_sel.split("| ID:")[1]); item = df[df['id'] == id_sel].iloc[0]
                     with st.form("ed_form"):
-                        st.write("### ✏️ Corrigir Dados")
-                        nt = st.text_input("Título", item['titulo'])
-                        na = st.text_input("Autor", item['autor'])
-                        ni = st.text_input("ISBN", item['isbn'])
-                        ng = st.text_input("Gênero", item['genero'])
-                        ns = st.text_area("Sinopse", item['sinopse'], height=150)
-                        nq = st.number_input("Estoque", value=int(item['quantidade']))
-                        if st.form_submit_button("💾 Salvar Alterações"):
+                        nt = st.text_input("Título", item['titulo']); na = st.text_input("Autor", item['autor'])
+                        ni = st.text_input("ISBN", item['isbn']); ng = st.text_input("Gênero", item['genero'])
+                        ns = st.text_area("Sinopse", item['sinopse'], height=150); nq = st.number_input("Estoque", value=int(item['quantidade']))
+                        if st.form_submit_button("💾 Salvar"):
                             supabase.table("livros_acervo").update({"titulo": nt, "autor": na, "isbn": ni, "genero": ng, "sinopse": ns, "quantidade": nq}).eq("id", id_sel).execute()
                             st.success("Alterado!"); st.rerun()
         if st.button("📥 Gerar Excel"):
@@ -238,7 +232,7 @@ elif menu == "Gestão do Acervo":
                 for g in df['genero'].unique():
                     aba = str(g)[:30]
                     df[df['genero']==g][['titulo','sinopse','autor','quantidade']].to_excel(wr, index=False, sheet_name=aba)
-            st.download_button("Baixar Arquivo Excel", output.getvalue(), "Acervo.xlsx")
+            st.download_button("Baixar Excel", output.getvalue(), "Acervo.xlsx")
     with tab_import:
         if st.session_state.perfil == "Diretor":
             f_diretor = st.file_uploader("Planilha do Diretor", type=['xlsx'])
@@ -261,13 +255,10 @@ elif menu == "Gestão do Acervo":
                         st.success(f"{len(novos)} novos livros.")
                         if st.button("🚀 Importar Novos"): supabase.table("livros_acervo").insert(novos).execute(); st.rerun()
                     if conf:
-                        st.warning(f"{len(conf)} duplicados.")
+                        st.warning(f"{len(conf)} duplicados."); st.dataframe(pd.DataFrame(conf)[['titulo', 'isbn']])
                         if st.button("➕ Forçar Importação"): supabase.table("livros_acervo").insert(conf).execute(); st.rerun()
                 except Exception as e: st.error(f"Erro: {e}")
 
-# =================================================================
-# 8. ABA: CURADORIA IA (Google + Gemini 2.0 Flash)
-# =================================================================
 elif menu == "Curadoria Inteligente (IA)":
     st.header("🪄 Curadoria em Cascata")
     api_key_gemini = st.text_input("Gemini API Key:", type="password")
@@ -292,7 +283,7 @@ elif menu == "Curadoria Inteligente (IA)":
                     except: pass
                     if f_a == "Pendente" or f_s == "Pendente" or len(f_s) < 30:
                         prompt = f"Livro: {row['titulo']}. Responda apenas: Autor; Sinopse Curta; Gênero. Use ';' como separador."
-                        url_gemini = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={api_key_gemini}"
+                        url_gemini = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={api_key_gemini}"
                         try:
                             resp = requests.post(url_gemini, headers={'Content-Type': 'application/json'}, data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}), timeout=10)
                             if resp.status_code == 200:
