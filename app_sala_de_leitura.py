@@ -285,7 +285,7 @@ elif menu == "Curadoria Inteligente (IA)":
                     # 2. Refina com Gemini 2.0 Flash
                     if f_a == "Pendente" or f_s == "Pendente" or len(f_s) < 30:
                         prompt = f"Livro: {row['titulo']}. Forneça: Autor; Sinopse Curta; Gênero. Separe por ';' e nada mais."
-                        url_gem = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={api_k}"
+                        url_gem = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={api_k}"
                         try:
                             resp = requests.post(url_gem, headers={'Content-Type': 'application/json'}, data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}), timeout=10)
                             if resp.status_code == 200:
