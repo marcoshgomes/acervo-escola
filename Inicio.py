@@ -96,7 +96,7 @@ if st.session_state.perfil == "Diretor":
 menu = st.sidebar.selectbox("Navegação:", opcoes_menu)
 
 # =================================================================
-# 5. ABA: ENTRADA DE LIVROS (MANUAL/ISBN - SEM CÂMERA)
+# 5. ABA: ENTRADA DE LIVROS
 # =================================================================
 if menu == "Entrada de Livros":
     st.header("🚚 Registro de Novos Volumes")
@@ -156,54 +156,70 @@ if menu == "Entrada de Livros":
                 else: st.error("Título obrigatório.")
 
 # =================================================================
-# 6. ABA: GESTÃO (PESQUISA UNIFICADA PARA PROFESSOR E DIRETOR)
+# 6. ABA: GESTÃO (PESQUISA, EDIÇÃO E EXCLUSÃO)
 # =================================================================
 elif menu == "Gestão do Acervo":
     st.header("📊 Painel de Controle")
     tab_list, tab_import = st.tabs(["📋 Lista e Busca", "📥 Importação Diretor"])
     
     with tab_list:
-        # Carrega todo o banco para garantir que a busca encontre qualquer um dos 2000 livros
         res = supabase.table("livros_acervo").select("*").execute()
         df = pd.DataFrame(res.data)
         
         if not df.empty:
             st.write("### 🔍 Pesquisar no Acervo")
-            # A busca agora é o filtro mestre para Professor e Diretor
-            termo = st.text_input("Digite o Título, Autor ou ISBN:", placeholder="Busque qualquer um dos 2000 livros...", key="busca_gestao")
+            termo = st.text_input("Digite o Título, Autor ou ISBN:", placeholder="Ex: Harry Potter...", key="busca_gestao")
             
             if termo:
-                # Filtro que ignora maiúsculas/minúsculas e trata valores nulos
                 mask = (df['titulo'].str.contains(termo, case=False, na=False) | 
                         df['autor'].str.contains(termo, case=False, na=False) | 
                         df['isbn'].str.contains(termo, case=False, na=False))
                 df_display = df[mask]
                 st.write(f"Foram encontrados {len(df_display)} livros.")
             else:
-                # Se não houver busca, mostramos apenas um aviso para incentivar a busca
-                st.info("💡 Digite o nome do livro acima para listar e editar.")
-                df_display = df.tail(10) # Mostra apenas 10 como exemplo inicial
+                st.info("💡 Digite o nome do livro acima para localizar qualquer registro.")
+                df_display = df.tail(10)
 
             st.dataframe(df_display[['titulo', 'autor', 'genero', 'quantidade', 'isbn']], use_container_width=True)
             
-            # O dropdown de edição agora usa EXATAMENTE os mesmos livros filtrados acima
             if not df_display.empty:
-                with st.expander("📝 Editar Registro Selecionado"):
+                with st.expander("📝 Editar ou Excluir Registro Selecionado"):
                     opcoes = df_display.apply(lambda x: f"{x['titulo']} | ID:{x['id']}", axis=1).tolist()
-                    livro_sel = st.selectbox("Selecione para editar:", ["..."] + opcoes)
+                    livro_sel = st.selectbox("Selecione o livro para modificar:", ["..."] + opcoes)
+                    
                     if livro_sel != "...":
                         id_sel = int(livro_sel.split("| ID:")[1])
                         item = df[df['id'] == id_sel].iloc[0]
-                        with st.form("ed_c"):
+                        
+                        with st.form("ed_completa_form"):
+                            st.write(f"### Editando: {item['titulo']}")
                             nt = st.text_input("Título", item['titulo'])
                             na = st.text_input("Autor", item['autor'])
                             ni = st.text_input("ISBN", item['isbn'])
                             ng = st.text_input("Gênero", item['genero'])
                             ns = st.text_area("Sinopse", item['sinopse'], height=100)
                             nq = st.number_input("Estoque", value=int(item['quantidade']))
-                            if st.form_submit_button("💾 Salvar Alterações"):
-                                supabase.table("livros_acervo").update({"titulo": nt, "autor": na, "isbn": ni, "genero": ng, "sinopse": ns, "quantidade": nq}).eq("id", id_sel).execute()
-                                st.success("Atualizado!"); time.sleep(1); st.rerun()
+                            
+                            st.divider()
+                            st.warning("⚠️ **Zona de Exclusão:** Para apagar este livro, marque a caixa abaixo antes de clicar em Excluir.")
+                            confirmar_exclusao = st.checkbox("Confirmo que desejo EXCLUIR permanentemente este livro do acervo.")
+                            
+                            # Botões Lado a Lado
+                            col_salvar, col_excluir = st.columns(2)
+                            
+                            if col_salvar.form_submit_button("💾 Salvar Alterações", use_container_width=True):
+                                supabase.table("livros_acervo").update({
+                                    "titulo": nt, "autor": na, "isbn": ni, 
+                                    "genero": ng, "sinopse": ns, "quantidade": nq
+                                }).eq("id", id_sel).execute()
+                                st.success("✅ Alterações salvas com sucesso!"); time.sleep(1.5); st.rerun()
+                            
+                            if col_excluir.form_submit_button("🗑️ Excluir Registro", use_container_width=True):
+                                if confirmar_exclusao:
+                                    supabase.table("livros_acervo").delete().eq("id", id_sel).execute()
+                                    st.success("🔥 Registro removido permanentemente!"); time.sleep(1.5); st.rerun()
+                                else:
+                                    st.error("❌ Erro: Você precisa marcar a caixa de confirmação para excluir.")
 
             if st.button("📥 Baixar Excel Completo"):
                 output = BytesIO()
@@ -241,7 +257,7 @@ elif menu == "Gestão do Acervo":
                 except Exception as e: st.error(f"Erro: {e}")
 
 # =================================================================
-# 7. ABA: CURADORIA INTELIGENTE (MANTIDA INTEGRAL)
+# 7. ABA: CURADORIA INTELIGENTE (IA)
 # =================================================================
 elif menu == "Curadoria Inteligente (IA)":
     st.header("🪄 Inteligência Artificial")
