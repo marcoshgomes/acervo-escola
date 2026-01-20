@@ -96,31 +96,28 @@ if st.session_state.perfil == "Diretor":
 menu = st.sidebar.selectbox("Navegação:", opcoes_menu)
 
 # =================================================================
-# 5. ABA: ENTRADA DE LIVROS (BUSCA ISBN OU MANUAL)
+# 5. ABA: ENTRADA DE LIVROS (MANUAL/ISBN - SEM CÂMERA)
 # =================================================================
 if menu == "Entrada de Livros":
     st.header("🚚 Registro de Novos Volumes")
     tab_isbn, tab_manual = st.tabs(["🔍 Por Código ISBN", "✍️ Cadastro Manual"])
 
     with tab_isbn:
-        st.info("Insira o número ISBN (atrás do livro) para preenchimento automático.")
+        st.info("Insira o ISBN para busca automática.")
         isbn_input = st.text_input("Digite o Código ISBN:", placeholder="Ex: 9788532511010", key=f"isb_in_{st.session_state.reset_count}")
-
         if isbn_input:
             isbn_limpo = str(isbn_input).strip()
             res_check = supabase.table("livros_acervo").select("*").eq("isbn", isbn_limpo).execute()
-            
             if res_check.data:
                 item = res_check.data[0]
-                st.success(f"📖 Livro já cadastrado: **{item['titulo']}**")
-                st.write(f"Estoque atual: {item['quantidade']} exemplares.")
+                st.success(f"📖 Livro: **{item['titulo']}**")
                 with st.form("form_inc"):
-                    qtd_add = st.number_input("Adicionar quantos novos volumes?", min_value=1, value=1)
+                    qtd_add = st.number_input("Volumes novos:", min_value=1, value=1)
                     if st.form_submit_button("Atualizar Estoque"):
                         supabase.table("livros_acervo").update({"quantidade": int(item['quantidade']) + qtd_add}).eq("isbn", isbn_limpo).execute()
                         st.success("Estoque atualizado!"); time.sleep(1.5); st.session_state.reset_count += 1; st.rerun()
             else:
-                with st.spinner("Buscando na Web..."):
+                with st.spinner("Buscando dados..."):
                     try:
                         api_key_google = st.secrets["google"]["books_api_key"]
                         url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn_limpo}&key={api_key_google}"
@@ -128,100 +125,96 @@ if menu == "Entrada de Livros":
                         dados = {"titulo": "", "autor": "Pendente", "sinopse": "Pendente", "genero": "Geral"}
                         if "items" in res:
                             info = res["items"][0]["volumeInfo"]
-                            dados = {
-                                "titulo": info.get("title", ""), 
-                                "autor": ", ".join(info.get("authors", ["Pendente"])), 
-                                "sinopse": info.get("description", "Pendente"), 
-                                "genero": traduzir_genero(info.get("categories", ["General"])[0])
-                            }
+                            dados = {"titulo": info.get("title", ""), "autor": ", ".join(info.get("authors", ["Pendente"])), "sinopse": info.get("description", "Pendente"), "genero": traduzir_genero(info.get("categories", ["General"])[0])}
                     except: dados = {"titulo": "", "autor": "Pendente", "sinopse": "Pendente", "genero": "Geral"}
-                    
                     with st.form("form_n"):
-                        st.write("### ✨ Novo Título Detectado")
                         t_f = st.text_input("Título", dados['titulo'])
                         a_f = st.text_input("Autor", dados['autor'])
-                        g_sel = st.selectbox("Gênero", options=get_generos_dinamicos(), key="g_isbn")
-                        g_novo = st.text_input("Se novo gênero, escreva aqui:", key="gn_isbn")
+                        g_sel = st.selectbox("Gênero", options=get_generos_dinamicos())
+                        g_novo = st.text_input("Novo Gênero?")
                         s_f = st.text_area("Sinopse", dados['sinopse'], height=150)
                         q_f = st.number_input("Quantidade inicial", min_value=1, value=1)
-                        if st.form_submit_button("🚀 Salvar no Banco"):
+                        if st.form_submit_button("🚀 Salvar"):
                             gen_final = g_novo.strip().capitalize() if g_sel == "➕ CADASTRAR NOVO GÊNERO" else g_sel
-                            supabase.table("livros_acervo").insert({
-                                "isbn": isbn_limpo, "titulo": t_f, "autor": a_f, "sinopse": s_f, "genero": gen_final, "quantidade": q_f,
-                                "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')
-                            }).execute()
-                            st.success("Cadastrado com sucesso!"); time.sleep(1.5); st.session_state.reset_count += 1; st.rerun()
+                            supabase.table("livros_acervo").insert({"isbn": isbn_limpo, "titulo": t_f, "autor": a_f, "sinopse": s_f, "genero": gen_final, "quantidade": q_f, "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')}).execute()
+                            st.success("Cadastrado!"); time.sleep(1.5); st.session_state.reset_count += 1; st.rerun()
 
     with tab_manual:
-        st.write("### ✍️ Cadastro Manual (Livros sem ISBN)")
         with st.form("form_man"):
             m_t = st.text_input("Título do Livro *")
             m_a = st.text_input("Autor *")
             m_i = st.text_input("ISBN (Opcional)")
-            m_g_sel = st.selectbox("Gênero", options=get_generos_dinamicos(), key="g_man")
-            m_g_novo = st.text_input("Novo Gênero?", key="gn_man")
+            m_g_sel = st.selectbox("Gênero", options=get_generos_dinamicos())
+            m_g_novo = st.text_input("Novo Gênero?")
             m_s = st.text_area("Sinopse")
             m_q = st.number_input("Quantidade", min_value=1, value=1)
-            if st.form_submit_button("💾 Salvar"):
+            if st.form_submit_button("💾 Salvar Manual"):
                 if m_t:
                     gen_f = m_g_novo.strip().capitalize() if m_g_sel == "➕ CADASTRAR NOVO GÊNERO" else m_g_sel
-                    supabase.table("livros_acervo").insert({
-                        "isbn": m_i if m_i else f"MANUAL-{int(time.time())}", "titulo": m_t, "autor": m_a if m_a else "Pendente",
-                        "sinopse": m_s if m_s else "Pendente", "genero": gen_f, "quantidade": m_q,
-                        "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')
-                    }).execute()
-                    st.success("Salvo com sucesso!"); time.sleep(1.5); st.session_state.reset_count += 1; st.rerun()
-                else: st.error("Título é obrigatório.")
+                    supabase.table("livros_acervo").insert({"isbn": m_i if m_i else f"MANUAL-{int(time.time())}", "titulo": m_t, "autor": m_a if m_a else "Pendente", "sinopse": m_s if m_s else "Pendente", "genero": gen_f, "quantidade": m_q, "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')}).execute()
+                    st.success("Salvo!"); time.sleep(1.5); st.session_state.reset_count += 1; st.rerun()
+                else: st.error("Título obrigatório.")
 
 # =================================================================
-# 6. ABA: GESTÃO (BUSCA INTELIGENTE E IMPORTAÇÃO COMPLETA)
+# 6. ABA: GESTÃO (PESQUISA UNIFICADA PARA PROFESSOR E DIRETOR)
 # =================================================================
 elif menu == "Gestão do Acervo":
     st.header("📊 Painel de Controle")
     tab_list, tab_import = st.tabs(["📋 Lista e Busca", "📥 Importação Diretor"])
     
     with tab_list:
+        # Carrega todo o banco para garantir que a busca encontre qualquer um dos 2000 livros
         res = supabase.table("livros_acervo").select("*").execute()
         df = pd.DataFrame(res.data)
+        
         if not df.empty:
             st.write("### 🔍 Pesquisar no Acervo")
-            termo = st.text_input("Digite o Título, Autor ou ISBN:", placeholder="Ex: Harry Potter...")
+            # A busca agora é o filtro mestre para Professor e Diretor
+            termo = st.text_input("Digite o Título, Autor ou ISBN:", placeholder="Busque qualquer um dos 2000 livros...", key="busca_gestao")
             
             if termo:
-                df_display = df[df['titulo'].str.contains(termo, case=False, na=False) | 
-                                df['autor'].str.contains(termo, case=False, na=False) | 
-                                df['isbn'].str.contains(termo, case=False, na=False)]
+                # Filtro que ignora maiúsculas/minúsculas e trata valores nulos
+                mask = (df['titulo'].str.contains(termo, case=False, na=False) | 
+                        df['autor'].str.contains(termo, case=False, na=False) | 
+                        df['isbn'].str.contains(termo, case=False, na=False))
+                df_display = df[mask]
+                st.write(f"Foram encontrados {len(df_display)} livros.")
             else:
-                st.info("Mostrando os últimos 15 cadastros (use a busca acima para ver tudo).")
-                df_display = df.tail(15)
+                # Se não houver busca, mostramos apenas um aviso para incentivar a busca
+                st.info("💡 Digite o nome do livro acima para listar e editar.")
+                df_display = df.tail(10) # Mostra apenas 10 como exemplo inicial
 
             st.dataframe(df_display[['titulo', 'autor', 'genero', 'quantidade', 'isbn']], use_container_width=True)
             
-            with st.expander("📝 Editar Registro Completo"):
-                opcoes = df_display.apply(lambda x: f"{x['titulo']} | ID:{x['id']}", axis=1).tolist()
-                livro_sel = st.selectbox("Selecione para editar:", ["..."] + opcoes)
-                if livro_sel != "...":
-                    id_sel = int(livro_sel.split("| ID:")[1])
-                    item = df[df['id'] == id_sel].iloc[0]
-                    with st.form("ed_c"):
-                        nt = st.text_input("Título", item['titulo']); na = st.text_input("Autor", item['autor'])
-                        ni = st.text_input("ISBN", item['isbn']); ng = st.text_input("Gênero", item['genero'])
-                        ns = st.text_area("Sinopse", item['sinopse'], height=100)
-                        nq = st.number_input("Estoque", value=int(item['quantidade']))
-                        if st.form_submit_button("💾 Salvar Alterações"):
-                            supabase.table("livros_acervo").update({"titulo": nt, "autor": na, "isbn": ni, "genero": ng, "sinopse": ns, "quantidade": nq}).eq("id", id_sel).execute()
-                            st.success("Atualizado!"); time.sleep(1); st.rerun()
+            # O dropdown de edição agora usa EXATAMENTE os mesmos livros filtrados acima
+            if not df_display.empty:
+                with st.expander("📝 Editar Registro Selecionado"):
+                    opcoes = df_display.apply(lambda x: f"{x['titulo']} | ID:{x['id']}", axis=1).tolist()
+                    livro_sel = st.selectbox("Selecione para editar:", ["..."] + opcoes)
+                    if livro_sel != "...":
+                        id_sel = int(livro_sel.split("| ID:")[1])
+                        item = df[df['id'] == id_sel].iloc[0]
+                        with st.form("ed_c"):
+                            nt = st.text_input("Título", item['titulo'])
+                            na = st.text_input("Autor", item['autor'])
+                            ni = st.text_input("ISBN", item['isbn'])
+                            ng = st.text_input("Gênero", item['genero'])
+                            ns = st.text_area("Sinopse", item['sinopse'], height=100)
+                            nq = st.number_input("Estoque", value=int(item['quantidade']))
+                            if st.form_submit_button("💾 Salvar Alterações"):
+                                supabase.table("livros_acervo").update({"titulo": nt, "autor": na, "isbn": ni, "genero": ng, "sinopse": ns, "quantidade": nq}).eq("id", id_sel).execute()
+                                st.success("Atualizado!"); time.sleep(1); st.rerun()
 
-            if st.button("📥 Baixar Excel"):
+            if st.button("📥 Baixar Excel Completo"):
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as wr:
                     for g in df['genero'].unique():
                         aba = "".join(c for c in str(g) if c.isalnum() or c==' ')[:30]
                         df[df['genero']==g][['titulo','sinopse','autor','quantidade']].to_excel(wr, index=False, sheet_name=aba)
-                st.download_button("Clique para Baixar", output.getvalue(), "Acervo.xlsx")
+                st.download_button("Clique para Baixar", output.getvalue(), "Acervo_Total.xlsx")
 
     with tab_import:
-        if st.session_state.perfil != "Diretor": st.warning("Acesso Restrito.")
+        if st.session_state.perfil != "Diretor": st.warning("Acesso Restrito ao Diretor.")
         else:
             f_diretor = st.file_uploader("Upload do arquivo Excel", type=['xlsx'])
             if f_diretor:
@@ -241,15 +234,14 @@ elif menu == "Gestão do Acervo":
                         if match: conflitos.append(dados)
                         else: novos.append(dados)
                     if novos:
-                        st.success(f"{len(novos)} novos títulos.")
+                        st.success(f"{len(novos)} novos títulos detectados.")
                         if st.button("Confirmar Novos"): supabase.table("livros_acervo").insert(novos).execute(); st.rerun()
                     if conflitos:
-                        st.warning(f"{len(conflitos)} duplicatas.")
-                        if st.button("Forçar Duplicados"): supabase.table("livros_acervo").insert(conflitos).execute(); st.rerun()
+                        st.warning(f"{len(conflitos)} duplicatas ignoradas.")
                 except Exception as e: st.error(f"Erro: {e}")
 
 # =================================================================
-# 7. ABA: CURADORIA INTELIGENTE (IA COMPLETA)
+# 7. ABA: CURADORIA INTELIGENTE (MANTIDA INTEGRAL)
 # =================================================================
 elif menu == "Curadoria Inteligente (IA)":
     st.header("🪄 Inteligência Artificial")
