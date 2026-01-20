@@ -5,40 +5,45 @@ import time
 from datetime import datetime
 from supabase import create_client, Client
 
-# --- CONEXÃO SUPABASE ---
-supabase: Client = create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
+# --- 1. CONEXÃO COM O BANCO ---
+@st.cache_resource
+def conectar_supabase():
+    return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
+
+supabase = conectar_supabase()
 
 def traduzir_genero(genero_ingles):
     mapa = {"Fiction": "Ficção", "Education": "Didático", "History": "História"}
     return mapa.get(genero_ingles, "Geral")
 
+# --- 2. INTERFACE ---
+st.title("🚚 Registro de Novos Volumes")
+st.info("Insira o ISBN para cadastrar ou atualizar o estoque.")
+
 if "reset_count" not in st.session_state:
     st.session_state.reset_count = 0
-
-st.title("🚚 Registro de Novos Volumes")
-st.info("Insira o número ISBN localizado atrás do livro ou na ficha catalográfica.")
 
 isbn_input = st.text_input("Digite o Código ISBN:", placeholder="Ex: 9788532511010", key=f"field_{st.session_state.reset_count}")
 
 if isbn_input:
     isbn_limpo = str(isbn_input).strip()
-    # Verifica se já existe no Supabase
+    # Verifica no Supabase
     res_check = supabase.table("livros_acervo").select("*").eq("isbn", isbn_limpo).execute()
     
     if res_check.data:
+        # CASO 1: LIVRO JÁ EXISTE
         item = res_check.data[0]
         st.success(f"📖 Livro Localizado: **{item['titulo']}**")
-        st.write(f"Estoque atual: {item['quantidade']} exemplares.")
-        with st.form("form_incremento"):
-            qtd_add = st.number_input("Quantos volumes novos chegaram?", min_value=1, value=1)
+        with st.form("form_inc"):
+            qtd_add = st.number_input("Adicionar exemplares?", 1)
             if st.form_submit_button("Atualizar Estoque"):
-                supabase.table("livros_acervo").update({"quantidade": int(item['quantidade']) + qtd_add}).eq("isbn", isbn_limpo).execute()
-                st.success("Estoque atualizado com sucesso!")
-                time.sleep(1.5)
+                nova_qtd = int(item['quantidade']) + qtd_add
+                supabase.table("livros_acervo").update({"quantidade": nova_qtd}).eq("isbn", isbn_limpo).execute()
+                st.success("Estoque atualizado!")
                 st.session_state.reset_count += 1
-                st.rerun()
+                time.sleep(1); st.rerun()
     else:
-        # BUSCA ONLINE (Lógica que você confirmou que funciona)
+        # CASO 2: BUSCA NO GOOGLE BOOKS (A lógica que você gosta)
         with st.spinner("Buscando informações bibliográficas..."):
             headers = {"User-Agent": "Mozilla/5.0"}
             try:
@@ -46,7 +51,6 @@ if isbn_input:
                 url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn_limpo}&key={api_key_google}"
                 res = requests.get(url, headers=headers).json()
                 
-                dados = {"titulo": "", "autor": "Pendente", "sinopse": "Pendente", "genero": "Geral"}
                 if "items" in res:
                     info = res["items"][0]["volumeInfo"]
                     dados = {
@@ -55,6 +59,8 @@ if isbn_input:
                         "sinopse": info.get("description", "Pendente"), 
                         "genero": traduzir_genero(info.get("categories", ["General"])[0])
                     }
+                else:
+                    dados = {"titulo": "", "autor": "Pendente", "sinopse": "Pendente", "genero": "Geral"}
             except:
                 dados = {"titulo": "", "autor": "Pendente", "sinopse": "Pendente", "genero": "Geral"}
             
@@ -62,8 +68,8 @@ if isbn_input:
                 st.write("### ✨ Novo Título Detectado")
                 t_f = st.text_input("Título", dados['titulo'])
                 a_f = st.text_input("Autor", dados['autor'])
-                s_f = st.text_area("Sinopse", dados['sinopse'], height=150)
-                q_f = st.number_input("Quantidade inicial", min_value=1, value=1)
+                s_f = st.text_area("Sinopse", dados['sinopse'], height=200)
+                q_f = st.number_input("Quantidade inicial", 1)
                 
                 if st.form_submit_button("🚀 Salvar no Banco de Dados"):
                     supabase.table("livros_acervo").insert({
@@ -71,7 +77,6 @@ if isbn_input:
                         "sinopse": s_f, "genero": dados['genero'], "quantidade": q_f,
                         "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')
                     }).execute()
-                    st.success("Livro cadastrado com sucesso!")
-                    time.sleep(1.5)
+                    st.success("Livro salvo com sucesso!")
                     st.session_state.reset_count += 1
-                    st.rerun()
+                    time.sleep(1); st.rerun()
