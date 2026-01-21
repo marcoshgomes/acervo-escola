@@ -168,7 +168,7 @@ elif menu == "Entrada de Livros":
                 else: st.error("Título é obrigatório.")
 
 # =================================================================
-# 7. ABA: CIRCULAÇÃO (CONECTADA ÀS SUAS NOVAS TABELAS)
+# 7. ABA: CIRCULAÇÃO (EMPRÉSTIMOS E PESSOAS) - CÓDIGO COMPLETO
 # =================================================================
 elif menu == "Circulação (Empréstimos)":
     st.header("📑 Circulação de Livros")
@@ -181,8 +181,13 @@ elif menu == "Circulação (Empréstimos)":
             tu = st.text_input("Turma (Ex: 6ºA, Professor, Funcionário)")
             if st.form_submit_button("🚀 Cadastrar Usuário"):
                 if nu:
-                    supabase.table("usuarios").insert({"nome": nu, "turma": tu}).execute()
-                    st.success(f"{nu} cadastrado!"); time.sleep(1.5); st.rerun()
+                    try:
+                        supabase.table("usuarios").insert({"nome": nu, "turma": tu}).execute()
+                        st.success(f"{nu} cadastrado!"); time.sleep(1); st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao cadastrar usuário: {e}")
+                else:
+                    st.error("Nome é obrigatório.")
         
         st.divider()
         res_u = supabase.table("usuarios").select("*").execute()
@@ -191,62 +196,92 @@ elif menu == "Circulação (Empréstimos)":
             st.write("### Lista de Usuários")
             ed_u = st.data_editor(df_u, num_rows="dynamic", use_container_width=True, hide_index=True)
             if st.button("💾 Sincronizar Lista de Usuários"):
-                supabase.table("usuarios").delete().neq("id", 0).execute()
-                novos_u = [{"nome": r['nome'], "turma": r['turma']} for _, r in ed_u.iterrows() if r['nome']]
-                if novos_u: supabase.table("usuarios").insert(novos_u).execute()
-                st.success("Lista sincronizada!"); time.sleep(1); st.rerun()
+                try:
+                    supabase.table("usuarios").delete().neq("id", 0).execute()
+                    novos_u = [{"nome": r['nome'], "turma": r['turma']} for _, r in ed_u.iterrows() if r['nome']]
+                    if novos_u: supabase.table("usuarios").insert(novos_u).execute()
+                    st.success("Lista sincronizada!"); time.sleep(1); st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao sincronizar: {e}")
 
     with aba_emp:
         st.subheader("Novo Empréstimo")
-        # Só livros com estoque > 0
+        # Busca livros com estoque disponível
         l_res = supabase.table("livros_acervo").select("id, titulo, quantidade").gt("quantidade", 0).execute()
+        # Busca usuários cadastrados
         u_res = supabase.table("usuarios").select("id, nome, turma").execute()
+        
         if l_res.data and u_res.data:
             u_map = {d['id']: f"{d['nome']} ({d['turma']})" for d in u_res.data}
             l_map = {d['id']: f"{d['titulo']} (Disp: {d['quantidade']})" for d in l_res.data}
-            sel_u = st.selectbox("Quem está pegando?", options=list(u_map.keys()), format_func=lambda x: u_map[x])
-            sel_l = st.selectbox("Qual o livro?", options=list(l_map.keys()), format_func=lambda x: l_map[x])
-            dias = st.select_slider("Prazo de devolução (dias):", [7, 15, 30], 15)
+            
+            sel_u = st.selectbox("Quem está pegando?", options=list(u_map.keys()), format_func=lambda x: u_map[x], key="sel_user")
+            sel_l = st.selectbox("Qual o livro?", options=list(l_map.keys()), format_func=lambda x: l_map[x], key="sel_book")
+            dias = st.select_slider("Prazo (dias):", [7, 15, 30], 15)
+            
             if st.button("🚀 Confirmar Saída"):
-                dt_s = datetime.now().strftime('%d/%m/%Y')
-                dt_p = (datetime.now() + timedelta(days=dias)).strftime('%d/%m/%Y')
-                # Registra empréstimo
-                supabase.table("emprestimos").insert({"id_livro": sel_l, "id_usuario": sel_u, "data_saida": dt_s, "data_retorno_prevista": dt_p, "status": "Ativo"}).execute()
-                # Baixa estoque
-                q_atual = next(i['quantidade'] for i in l_res.data if i['id'] == sel_l)
-                supabase.table("livros_acervo").update({"quantidade": q_atual - 1}).eq("id", sel_l).execute()
-                st.success("Empréstimo realizado!"); time.sleep(1.5); st.rerun()
-        else: st.info("Cadastre pessoas e livros com estoque disponível.")
+                try:
+                    dt_s = datetime.now().strftime('%d/%m/%Y')
+                    dt_p = (datetime.now() + timedelta(days=dias)).strftime('%d/%m/%Y')
+                    
+                    payload = {
+                        "id_livro": int(sel_l), 
+                        "id_usuario": int(sel_u), 
+                        "data_saida": dt_s, 
+                        "data_retorno_prevista": dt_p, 
+                        "status": "Ativo"
+                    }
+                    
+                    # Tenta inserir na tabela emprestimos
+                    res_ins = supabase.table("emprestimos").insert(payload).execute()
+                    
+                    # Se inseriu, baixa o estoque
+                    q_atual = next(i['quantidade'] for i in l_res.data if i['id'] == sel_l)
+                    supabase.table("livros_acervo").update({"quantidade": int(q_atual) - 1}).eq("id", int(sel_l)).execute()
+                    
+                    st.success("✅ Empréstimo registrado com sucesso!")
+                    time.sleep(1.5); st.rerun()
+                    
+                except Exception as e:
+                    st.error("❌ Ocorreu um erro no Banco de Dados")
+                    st.code(str(e))
+        else:
+            if not u_res.data:
+                st.warning("⚠️ Nenhum usuário encontrado. Cadastre alguém na aba 'Pessoas'.")
+            if not l_res.data:
+                st.warning("⚠️ Nenhum livro com estoque disponível.")
 
     with aba_dev:
         st.subheader("📥 Registro de Devolução")
         res_e = supabase.table("emprestimos").select("*").eq("status", "Ativo").execute()
         if res_e.data:
             df_e = pd.DataFrame(res_e.data)
-            # Buscamos nomes para exibir
             l_res = supabase.table("livros_acervo").select("id, titulo").execute()
             u_res = supabase.table("usuarios").select("id, nome").execute()
             df_l, df_u = pd.DataFrame(l_res.data), pd.DataFrame(u_res.data)
             
-            # Merge para visualização
             df_m = df_e.merge(df_l, left_on='id_livro', right_on='id', suffixes=('', '_liv'))
             df_m = df_m.merge(df_u, left_on='id_usuario', right_on='id', suffixes=('', '_usr'))
             df_m["Selecionar"] = False
             
-            st.write("Selecione os livros que estão sendo devolvidos:")
             grid = st.data_editor(df_m[["Selecionar", "titulo", "nome", "data_retorno_prevista"]], hide_index=True, use_container_width=True)
             
             sel = grid[grid["Selecionar"] == True]
             if not sel.empty and st.button(f"Confirmar Devolução de {len(sel)} item(ns)"):
-                for idx in sel.index:
-                    loan = df_m.loc[idx]
-                    # Finaliza empréstimo (usando o ID da tabela emprestimos que é loan['id'])
-                    supabase.table("emprestimos").update({"status": "Devolvido"}).eq("id", loan['id']).execute()
-                    # Devolve estoque
-                    q_res = supabase.table("livros_acervo").select("quantidade").eq("id", loan['id_livro']).execute()
-                    supabase.table("livros_acervo").update({"quantidade": q_res.data[0]['quantidade'] + 1}).eq("id", loan['id_livro']).execute()
-                st.success("Devolução concluída!"); time.sleep(1.5); st.rerun()
-        else: st.info("Nenhum empréstimo ativo no momento.")
+                try:
+                    for idx in sel.index:
+                        loan = df_m.loc[idx]
+                        # Finaliza empréstimo - usando a coluna 'id' correta do merge
+                        loan_id = int(loan['id']) if 'id' in loan else int(loan.get('id_x', 0))
+                        supabase.table("emprestimos").update({"status": "Devolvido"}).eq("id", loan_id).execute()
+                        # Devolve estoque
+                        q_res = supabase.table("livros_acervo").select("quantidade").eq("id", int(loan['id_livro'])).execute()
+                        supabase.table("livros_acervo").update({"quantidade": int(q_res.data[0]['quantidade']) + 1}).eq("id", int(loan['id_livro'])).execute()
+                    st.success("Devolução concluída!"); time.sleep(1); st.rerun()
+                except Exception as e:
+                    st.error(f"Erro na devolução: {e}")
+        else:
+            st.info("Nenhum empréstimo ativo no momento.")
 
 # =================================================================
 # 8. ABA: GESTÃO (PESQUISA, EDIÇÃO E EXCLUSÃO)
