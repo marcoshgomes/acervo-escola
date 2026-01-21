@@ -305,47 +305,142 @@ elif menu == "Circulação (Empréstimos)":
             st.info("Não há empréstimos ativos.")
 
 # =================================================================
-# 8. ABA: GESTÃO (PESQUISA, EDIÇÃO E EXCLUSÃO)
+# 8. ABA: GESTÃO DO ACERVO (PESQUISA, EDIÇÃO E IMPORTAÇÃO)
 # =================================================================
 elif menu == "Gestão do Acervo":
     st.header("📊 Painel de Controle")
-    res = supabase.table("livros_acervo").select("*").execute()
-    df = pd.DataFrame(res.data)
-    if not df.empty:
-        termo = st.text_input("Busca Geral (Título, Autor ou ISBN):", key="bg_gestao")
-        if termo:
-            df_d = df[df['titulo'].str.contains(termo, False, False) | 
-                      df['autor'].str.contains(termo, False, False) | 
-                      df['isbn'].str.contains(termo, False, False)]
-        else: df_d = df.tail(15)
+    tab_list, tab_import = st.tabs(["📋 Lista e Busca", "📥 Importação Diretor"])
+    
+    with tab_list:
+        # Carrega dados do banco para a gestão
+        res = supabase.table("livros_acervo").select("*").execute()
+        df = pd.DataFrame(res.data)
         
-        st.dataframe(df_d[['titulo', 'autor', 'genero', 'quantidade', 'isbn']], use_container_width=True)
-        
-        with st.expander("📝 Editar ou Excluir Registro Selecionado"):
-            op = df_d.apply(lambda x: f"{x['titulo']} | ID:{x['id']}", axis=1).tolist()
-            sel = st.selectbox("Escolha o livro:", ["..."] + op)
-            if sel != "...":
-                idx = int(sel.split("| ID:")[1])
-                item = df[df['id'] == idx].iloc[0]
-                with st.form("ed_final"):
-                    c1, c2 = st.columns(2)
-                    nt = c1.text_input("Título", item['titulo'])
-                    na = c2.text_input("Autor", item['autor'])
-                    ni = c1.text_input("ISBN", item['isbn'])
-                    ng = c2.text_input("Gênero", item['genero'])
-                    ns = st.text_area("Sinopse", item['sinopse'], height=100)
-                    nq = st.number_input("Estoque Total", value=int(item['quantidade']))
-                    st.divider()
-                    exc = st.checkbox("⚠️ Confirmo que desejo EXCLUIR este livro permanentemente.")
-                    b1, b2 = st.columns(2)
-                    if b1.form_submit_button("💾 Salvar Alterações", use_container_width=True):
-                        supabase.table("livros_acervo").update({"titulo": nt, "autor": na, "isbn": ni, "genero": ng, "sinopse": ns, "quantidade": nq}).eq("id", idx).execute()
-                        st.success("Atualizado!"); time.sleep(1); st.rerun()
-                    if b2.form_submit_button("🗑️ Excluir Registro", use_container_width=True):
-                        if exc:
-                            supabase.table("livros_acervo").delete().eq("id", idx).execute()
-                            st.success("Excluído!"); time.sleep(1); st.rerun()
-                        else: st.error("Marque a confirmação para excluir.")
+        if not df.empty:
+            st.write("### 🔍 Pesquisar no Acervo")
+            termo = st.text_input("Localizar por Título, Autor ou ISBN:", placeholder="Ex: Machado de Assis...", key="busca_gestao_final")
+            
+            if termo:
+                # Busca em todo o dataframe
+                mask = (df['titulo'].str.contains(termo, case=False, na=False) | 
+                        df['autor'].str.contains(termo, case=False, na=False) | 
+                        df['isbn'].str.contains(termo, case=False, na=False))
+                df_display = df[mask]
+                st.write(f"✅ {len(df_display)} registros encontrados.")
+            else:
+                st.info("💡 Digite algo acima para filtrar os 2000+ livros. Abaixo os 15 mais recentes:")
+                df_display = df.tail(15)
+
+            st.dataframe(df_display[['titulo', 'autor', 'genero', 'quantidade', 'isbn']], use_container_width=True)
+            
+            # --- BLOCO DE EDIÇÃO E EXCLUSÃO ---
+            with st.expander("📝 Editar ou Excluir Registro Selecionado"):
+                opcoes = df_display.apply(lambda x: f"{x['titulo']} | ID:{x['id']}", axis=1).tolist()
+                livro_sel = st.selectbox("Selecione o livro para modificar:", ["..."] + opcoes)
+                
+                if livro_sel != "...":
+                    id_sel = int(livro_sel.split("| ID:")[1])
+                    item = df[df['id'] == id_sel].iloc[0]
+                    
+                    with st.form("form_edicao_gestao"):
+                        col_ed1, col_ed2 = st.columns(2)
+                        nt = col_ed1.text_input("Título", item['titulo'])
+                        na = col_ed2.text_input("Autor", item['autor'])
+                        ni = col_ed1.text_input("ISBN", item['isbn'])
+                        ng = col_ed2.text_input("Gênero", item['genero'])
+                        ns = st.text_area("Sinopse", item['sinopse'], height=100)
+                        nq = st.number_input("Estoque Total", value=int(item['quantidade']))
+                        
+                        st.divider()
+                        st.warning("⚠️ **Atenção:** Para excluir, marque a confirmação abaixo.")
+                        confirmar_exc = st.checkbox("Confirmo que desejo apagar este registro permanentemente.")
+                        
+                        btn_salvar, btn_excluir = st.columns(2)
+                        
+                        if btn_salvar.form_submit_button("💾 Salvar Alterações", use_container_width=True):
+                            supabase.table("livros_acervo").update({
+                                "titulo": nt, "autor": na, "isbn": ni, 
+                                "genero": ng, "sinopse": ns, "quantidade": nq
+                            }).eq("id", id_sel).execute()
+                            st.success("✅ Atualizado com sucesso!")
+                            time.sleep(1); st.rerun()
+                        
+                        if btn_excluir.form_submit_button("🗑️ Excluir Livro", use_container_width=True):
+                            if confirmar_exc:
+                                supabase.table("livros_acervo").delete().eq("id", id_sel).execute()
+                                st.success("🗑️ Registro removido!"); time.sleep(1); st.rerun()
+                            else:
+                                st.error("❌ Marque a caixa de confirmação para excluir.")
+
+            # --- BOTÃO DE EXPORTAÇÃO EXCEL ---
+            if st.button("📥 Gerar Planilha Excel (Abas por Gênero)"):
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as wr:
+                    for g in df['genero'].unique():
+                        # Limpa nome da aba (máx 30 caracteres e sem símbolos)
+                        nome_aba = "".join(c for c in str(g) if c.isalnum() or c==' ')[:30]
+                        df[df['genero']==g][['titulo','autor','genero','quantidade','isbn']].to_excel(wr, index=False, sheet_name=nome_aba)
+                st.download_button("Baixar Arquivo Excel", output.getvalue(), "Acervo_Escolar_Completo.xlsx")
+
+    with tab_import:
+        if st.session_state.perfil != "Diretor":
+            st.warning("⚠️ Acesso restrito ao Diretor para importação de planilhas.")
+        else:
+            st.subheader("📥 Importação em Massa (Diretor)")
+            st.info("O arquivo deve ser um Excel (.xlsx) contendo a aba 'livros escaneados'.")
+            
+            f_diretor = st.file_uploader("Selecione a planilha Excel", type=['xlsx'])
+            
+            if f_diretor:
+                try:
+                    df_up = pd.read_excel(f_diretor, sheet_name='livros escaneados')
+                    res_db = supabase.table("livros_acervo").select("isbn, titulo").execute()
+                    df_banco = pd.DataFrame(res_db.data)
+                    
+                    novos, conflitos = [], []
+                    barra_p = st.progress(0)
+                    
+                    for i, row in df_up.iterrows():
+                        isbn_up = str(row.get('ISBN', '')).strip().replace(".0", "")
+                        titulo_up = str(row.get('Título', '')).strip()
+                        
+                        # Verifica duplicidade
+                        match = False
+                        if not df_banco.empty:
+                            m_isbn = (isbn_up != "" and isbn_up in df_banco['isbn'].values)
+                            m_tit = (titulo_up.lower() in df_banco['titulo'].str.lower().values)
+                            if m_isbn or m_tit: match = True
+                        
+                        dados = {
+                            "isbn": isbn_up if isbn_up != "nan" and isbn_up != "" else f"IMP-{int(time.time())}-{i}",
+                            "titulo": titulo_up,
+                            "autor": str(row.get('Autor(es)', 'Pendente')),
+                            "sinopse": str(row.get('Sinopse', 'Pendente')),
+                            "genero": str(row.get('Categorias', 'Geral')),
+                            "quantidade": 1,
+                            "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')
+                        }
+                        
+                        if match: conflitos.append(dados)
+                        else: novos.append(dados)
+                        barra_p.progress((i + 1) / len(df_up))
+                    
+                    if novos:
+                        st.success(f"✨ {len(novos)} novos livros detectados.")
+                        if st.button("🚀 Confirmar Importação dos Novos"):
+                            supabase.table("livros_acervo").insert(novos).execute()
+                            st.success("Importado!"); time.sleep(1); st.rerun()
+                    
+                    if conflitos:
+                        st.warning(f"⚠️ {len(conflitos)} registros já existem (duplicatas).")
+                        with st.expander("Ver livros ignorados"):
+                            st.dataframe(pd.DataFrame(conflitos)[['titulo', 'isbn']])
+                        if st.button("➕ Forçar Importação de Duplicados"):
+                            supabase.table("livros_acervo").insert(conflitos).execute()
+                            st.success("Importação forçada concluída!"); time.sleep(1); st.rerun()
+
+                except Exception as e:
+                    st.error(f"❌ Erro ao processar: {e}")
 
 # =================================================================
 # 9. ABA: CURADORIA INTELIGENTE (IA - MANTIDA)
