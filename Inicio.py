@@ -112,60 +112,93 @@ if menu == "Consulta do Acervo":
     else: st.info("O acervo está vazio.")
 
 # =================================================================
-# 6. ABA: ENTRADA DE LIVROS (REMOVIDO CÂMERA)
+# 6. ABA: ENTRADA DE LIVROS (INCREMENTO COM CONFIRMAÇÃO)
 # =================================================================
 elif menu == "Entrada de Livros":
     st.header("🚚 Registro de Novos Volumes")
-    t_isbn, t_man = st.tabs(["🔍 Por ISBN (Rápido)", "✍️ Cadastro Manual"])
-    
-    with t_isbn:
-        isbn_in = st.text_input("Digite o ISBN:", key=f"isb_{st.session_state.reset_count}")
-        if isbn_in:
-            isbn_limpo = isbn_in.strip()
-            res_c = supabase.table("livros_acervo").select("*").eq("isbn", isbn_limpo).execute()
-            if res_c.data:
-                item = res_c.data[0]
-                st.success(f"📖 Livro Localizado: {item['titulo']}")
-                with st.form("f_inc"):
-                    q = st.number_input("Volumes novos:", min_value=1, value=1)
-                    if st.form_submit_button("Atualizar Estoque"):
-                        supabase.table("livros_acervo").update({"quantidade": int(item['quantidade']) + q}).eq("isbn", isbn_limpo).execute()
-                        st.success("Estoque atualizado!"); time.sleep(1); st.session_state.reset_count += 1; st.rerun()
+    tab_isbn, tab_manual = st.tabs(["🔍 Por Código ISBN", "✍️ Cadastro Manual"])
+
+    with tab_isbn:
+        st.info("Insira o ISBN para busca automática.")
+        isbn_input = st.text_input("Digite o ISBN:", key=f"isb_in_{st.session_state.reset_count}")
+        if isbn_input:
+            isbn_limpo = str(isbn_input).strip()
+            res_check = supabase.table("livros_acervo").select("*").eq("isbn", isbn_limpo).execute()
+            
+            if res_check.data:
+                item = res_check.data[0]
+                st.warning(f"📢 Título já cadastrado: **{item['titulo']}**")
+                st.write(f"Estoque atual: {item['quantidade']} exemplares.")
+                
+                with st.form("confirm_inc_isbn"):
+                    qtd_add = st.number_input("Quantos novos volumes deseja adicionar?", min_value=1, value=1)
+                    st.write("---")
+                    if st.form_submit_button("✅ Confirmar Adição ao Estoque"):
+                        nova_qtd = int(item['quantidade']) + qtd_add
+                        supabase.table("livros_acervo").update({"quantidade": nova_qtd}).eq("id", item['id']).execute()
+                        st.success(f"Estoque atualizado! Agora são {nova_qtd} exemplares.")
+                        time.sleep(1.5); st.session_state.reset_count += 1; st.rerun()
             else:
-                with st.spinner("Buscando na Web..."):
+                # Lógica de busca na API (Google Books) permanece igual...
+                with st.spinner("Buscando dados na Web..."):
                     try:
-                        api_k = st.secrets["google"]["books_api_key"]
-                        res = requests.get(f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn_limpo}&key={api_k}").json()
+                        api_key_google = st.secrets["google"]["books_api_key"]
+                        url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn_limpo}&key={api_key_google}"
+                        res = requests.get(url).json()
                         info = res["items"][0]["volumeInfo"]
                         dados = {"titulo": info.get("title", ""), "autor": ", ".join(info.get("authors", ["Pendente"])), "sinopse": info.get("description", "Pendente"), "genero": traduzir_genero(info.get("categories", ["General"])[0])}
                     except: dados = {"titulo": "", "autor": "Pendente", "sinopse": "Pendente", "genero": "Geral"}
-                    with st.form("f_new_isbn"):
-                        tf = st.text_input("Título", dados['titulo'])
-                        af = st.text_input("Autor", dados['autor'])
-                        gs = st.selectbox("Gênero", get_generos_dinamicos(), key="gs_isbn")
-                        gn = st.text_input("Novo Gênero?", key="gn_isbn")
-                        sf = st.text_area("Sinopse", dados['sinopse'])
-                        qf = st.number_input("Quantidade inicial", min_value=1, value=1)
-                        if st.form_submit_button("🚀 Cadastrar Livro"):
-                            gf = gn.strip().capitalize() if gs == "➕ CADASTRAR NOVO GÊNERO" else gs
-                            supabase.table("livros_acervo").insert({"isbn": isbn_limpo, "titulo": tf, "autor": af, "sinopse": sf, "genero": gf, "quantidade": qf, "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')}).execute()
-                            st.success("Cadastrado!"); time.sleep(1); st.session_state.reset_count += 1; st.rerun()
+                    
+                    with st.form("form_novo_isbn_confirm"):
+                        st.write("### ✨ Novo Título Detectado")
+                        t_f = st.text_input("Título", dados['titulo'])
+                        a_f = st.text_input("Autor", dados['autor'])
+                        gs = st.selectbox("Gênero", options=get_generos_dinamicos())
+                        gn = st.text_input("Novo Gênero?")
+                        sf = st.text_area("Sinopse", dados['sinopse'], height=100)
+                        q_f = st.number_input("Quantidade inicial", min_value=1, value=1)
+                        if st.form_submit_button("🚀 Confirmar Cadastro Novo"):
+                            gen_final = gn.strip().capitalize() if gs == "➕ CADASTRAR NOVO GÊNERO" else gs
+                            supabase.table("livros_acervo").insert({"isbn": isbn_limpo, "titulo": t_f, "autor": a_f, "sinopse": sf, "genero": gen_final, "quantidade": q_f, "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')}).execute()
+                            st.success("Livro cadastrado com sucesso!"); time.sleep(1.5); st.session_state.reset_count += 1; st.rerun()
 
-    with t_man:
-        with st.form("f_man"):
-            mt = st.text_input("Título do Livro *")
-            ma = st.text_input("Autor *", "Pendente")
-            mi = st.text_input("ISBN (Opcional)")
-            mg = st.selectbox("Gênero", get_generos_dinamicos(), key="gm")
-            mgn = st.text_input("Novo Gênero?", key="gnm")
-            ms = st.text_area("Sinopse", "Pendente")
-            mq = st.number_input("Quantidade", min_value=1, value=1)
-            if st.form_submit_button("💾 Salvar Registro Manual"):
-                if mt:
-                    gf = mgn.strip().capitalize() if mg == "➕ CADASTRAR NOVO GÊNERO" else mg
-                    supabase.table("livros_acervo").insert({"isbn": mi if mi else f"M-{int(time.time())}", "titulo": mt, "autor": ma, "sinopse": ms, "genero": gf, "quantidade": mq, "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')}).execute()
-                    st.success("Salvo com sucesso!"); time.sleep(1); st.session_state.reset_count += 1; st.rerun()
-                else: st.error("Título é obrigatório.")
+    with tab_manual:
+        st.write("### ✍️ Cadastro Manual")
+        m_titulo = st.text_input("Título do Livro *", key="man_t")
+        
+        if m_titulo:
+            # Verifica se já existe um título similar
+            res_t = supabase.table("livros_acervo").select("*").ilike("titulo", f"%{m_titulo.strip()}%").execute()
+            
+            if res_t.data:
+                item_s = res_t.data[0]
+                st.warning(f"⚠️ Título similar encontrado: **{item_s['titulo']}**")
+                st.write(f"Autor: {item_s['autor']} | Estoque: {item_s['quantidade']}")
+                
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    if st.button("➕ Somar ao Estoque Existente"):
+                        supabase.table("livros_acervo").update({"quantidade": int(item_s['quantidade']) + 1}).eq("id", item_s['id']).execute()
+                        st.success("Quantidade incrementada!"); time.sleep(1.5); st.rerun()
+                with col_m2:
+                    st.info("Ou preencha abaixo para cadastrar como um novo registro.")
+
+            with st.form("form_manual_puro_confirm"):
+                m_autor = st.text_input("Autor *", value="Pendente")
+                m_isbn = st.text_input("ISBN (Opcional)")
+                m_gen_sel = st.selectbox("Gênero", options=get_generos_dinamicos())
+                m_gen_novo = st.text_input("Novo Gênero?")
+                m_sinopse = st.text_area("Sinopse", value="Pendente")
+                m_qtd = st.number_input("Quantidade", min_value=1, value=1)
+                
+                if st.form_submit_button("🚀 Confirmar Novo Cadastro Manual"):
+                    gen_f = m_gen_novo.strip().capitalize() if m_gen_sel == "➕ CADASTRAR NOVO GÊNERO" else m_gen_sel
+                    supabase.table("livros_acervo").insert({
+                        "isbn": m_isbn if m_isbn else f"M-{int(time.time())}", 
+                        "titulo": m_titulo, "autor": m_autor, "sinopse": m_sinopse, 
+                        "genero": gen_f, "quantidade": m_qtd, "data_cadastro": datetime.now().strftime('%d/%m/%Y %H:%M')
+                    }).execute()
+                    st.success("Cadastrado com sucesso!"); time.sleep(1.5); st.session_state.reset_count += 1; st.rerun()
 
 # =================================================================
 # 7. ABA: CIRCULAÇÃO (EMPRÉSTIMOS COM BUSCA INTELIGENTE)
@@ -393,7 +426,7 @@ elif menu == "Gestão do Acervo":
             
             if f_diretor:
                 try:
-                    df_up = pd.read_excel(f_diretor, sheet_name='livros escaneados')
+                    df_up = pd.read_excel(f_diretor, sheet_name='Livros Escaneados')
                     res_db = supabase.table("livros_acervo").select("isbn, titulo").execute()
                     df_banco = pd.DataFrame(res_db.data)
                     
